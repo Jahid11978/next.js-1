@@ -3264,10 +3264,6 @@ async fn handle_exports_imports_field(
                 };
                 resolved_results.push(resolve_result);
             }
-            ReplacedSubpathValueResultType::Excluded => {
-                // `null` in the exports/imports field: the import is blocked.
-                // Produce no resolved result, which leads to an unresolvable outcome.
-            }
         }
     }
 
