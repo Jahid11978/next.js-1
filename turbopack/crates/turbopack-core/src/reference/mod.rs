@@ -34,9 +34,7 @@ pub trait ModuleReference: ValueToString {
     // TODO think about different types
     // fn kind(&self) -> Vc<AssetReferenceType>;
 
-    fn chunking_type(&self) -> Option<ChunkingType> {
-        None
-    }
+    fn chunking_type(&self) -> Option<ChunkingType>;
 
     fn binding_usage(&self) -> BindingUsage {
         BindingUsage::default()

@@ -407,7 +407,21 @@ impl SingleModuleGraph {
                     for (key, debug, parents) in duplicate_modules {
                         map.entry(key).or_default().push((debug, parents));
                     }
-                    bail!("Duplicate module idents in graph: {map:#?}",);
+                    let result = map
+                        .into_iter()
+                        .map(|(ident, modules)| {
+                            let modules = modules
+                                .into_iter()
+                                .map(|(debug, parents)| {
+                                    format!("Module: {debug}, Parents: {parents:?}")
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            format!("Ident: {ident}\n{modules}")
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    bail!("Duplicate module idents in graph: {result}");
                 }
             }
         }
@@ -1663,14 +1677,8 @@ impl Visit<SingleModuleGraphBuilderNode, RefData> for SingleModuleGraphBuilder<'
     fn visit(
         &mut self,
         node: &SingleModuleGraphBuilderNode,
-        edge: Option<&RefData>,
+        _edge: Option<&RefData>,
     ) -> VisitControlFlow {
-        if let Some(edge) = edge
-            && matches!(edge.chunking_type, ChunkingType::Traced)
-        {
-            // The graph behind traced references is not part of the module graph traversal
-            return VisitControlFlow::Skip;
-        }
         match node {
             SingleModuleGraphBuilderNode::Module { .. } => VisitControlFlow::Continue,
             // Module was already visited previously
