@@ -27,9 +27,10 @@ impl TracedAsset {
 impl OutputAssetsReference for TracedAsset {
     #[turbo_tasks::function]
     async fn references(&self) -> Result<Vc<OutputAssetsWithReferenced>> {
-        let references = referenced_modules_and_affecting_sources(*self.module)
+        let references = referenced_modules_and_affecting_sources(*self.module, false)
             .await?
             .iter()
+            .flat_map(|(_, ref_data)| ref_data.modules.iter())
             .map(async |module| {
                 Ok(ResolvedVc::upcast(
                     TracedAsset::new(**module).to_resolved().await?,

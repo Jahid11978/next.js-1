@@ -38,7 +38,10 @@ use crate::{
         style_groups::{StyleGroups, StyleGroupsConfig, compute_style_groups},
         traced_di_graph::TracedDiGraph,
     },
-    reference::{ModuleReference, primary_chunkable_referenced_modules},
+    reference::{
+        ModuleReference, primary_chunkable_referenced_modules,
+        referenced_modules_and_affecting_sources,
+    },
     resolve::BindingUsage,
 };
 
@@ -1702,11 +1705,20 @@ impl Visit<SingleModuleGraphBuilderNode, RefData> for SingleModuleGraphBuilder<'
         let include_traced = self.include_traced;
         let include_binding_usage = self.include_binding_usage;
         async move {
-            let refs_cell = primary_chunkable_referenced_modules(
-                *module,
-                include_traced,
-                include_binding_usage,
-            );
+            // WIP this is ugly
+            let is_tracing_context = module
+                .ident()
+                .await?
+                .layer
+                .as_ref()
+                .is_some_and(|l| l.name() == "externals-tracing");
+
+            let refs_cell = if !is_tracing_context {
+                primary_chunkable_referenced_modules(*module, include_traced, include_binding_usage)
+            } else {
+                // Currently we don't care about the binding usage of traced references
+                referenced_modules_and_affecting_sources(*module, false)
+            };
             let refs = match refs_cell.await {
                 Ok(refs) => refs,
                 Err(e) => {
