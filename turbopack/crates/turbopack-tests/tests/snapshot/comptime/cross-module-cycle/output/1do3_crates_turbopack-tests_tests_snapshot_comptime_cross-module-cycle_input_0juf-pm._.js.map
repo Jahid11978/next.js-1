@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": [],
-  "sections": [
-    {"offset": {"line": 4, "column": 0}, "map": {"version":3,"sources":["turbopack:///[project]/turbopack/crates/turbopack-tests/tests/snapshot/comptime/cross-module-cycle/input/other.js"],"sourcesContent":["import { FOO as foo } from './other.js'\nfunction foo1(left, right) {\n  // might be an infinite loop at runtime, but shouldn't hang the build\n  return foo(left, right)\n}\nexport { foo1 as FOO }\n"],"names":["foo1","left","right"],"mappings":";;;;AAAA;;AACA,SAASA,KAAKC,IAAI,EAAEC,KAAK;IACvB,qEAAqE;IACrE,OAAO,IAAA,yNAAG,EAACD,MAAMC;AACnB"}},
-    {"offset": {"line": 19, "column": 0}, "map": {"version":3,"sources":["turbopack:///[project]/turbopack/crates/turbopack-tests/tests/snapshot/comptime/cross-module-cycle/input/index.js"],"sourcesContent":["import { FOO } from './other.js'\n\nconsole.log(FOO)\n"],"names":["console","log"],"mappings":";AAAA;;AAEAA,QAAQC,GAAG,CAAC,yNAAG"}}]
-}
