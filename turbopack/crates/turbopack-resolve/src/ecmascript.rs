@@ -1,6 +1,6 @@
 use anyhow::Result;
 use turbo_rcstr::rcstr;
-use turbo_tasks::{ResolvedVc, Vc};
+use turbo_tasks::Vc;
 use turbopack_core::{
     issue::IssueSource,
     reference_type::{CommonJsReferenceSubType, EcmaScriptModulesReferenceSubType, ReferenceType},
@@ -101,6 +101,36 @@ pub async fn esm_resolve(
     specific_resolve(origin, request, options, ty, error_mode, issue_source).await
 }
 
+pub async fn esm_resolve_source(
+    origin: Vc<Box<dyn ResolveOrigin>>,
+    request: Vc<Request>,
+    ty: EcmaScriptModulesReferenceSubType,
+    error_mode: ResolveErrorMode,
+    issue_source: Option<IssueSource>,
+) -> Result<Vc<ResolveResult>> {
+    let ty = ReferenceType::EcmaScriptModules(ty);
+    let options = apply_esm_specific_options(origin.resolve_options(), &ty)
+        .resolve()
+        .await?;
+    let result = resolve(
+        origin.origin_path().await?.parent(),
+        ty.clone(),
+        request,
+        options,
+    );
+
+    handle_resolve_source_error(
+        result,
+        ty,
+        origin,
+        request,
+        options,
+        error_mode,
+        issue_source,
+    )
+    .await
+}
+
 #[turbo_tasks::function]
 pub async fn cjs_resolve(
     origin: Vc<Box<dyn ResolveOrigin>>,
@@ -118,8 +148,8 @@ pub async fn cjs_resolve(
 
 #[turbo_tasks::function]
 pub async fn cjs_resolve_source(
-    origin: ResolvedVc<Box<dyn ResolveOrigin>>,
-    request: ResolvedVc<Request>,
+    origin: Vc<Box<dyn ResolveOrigin>>,
+    request: Vc<Request>,
     ty: CommonJsReferenceSubType,
     issue_source: Option<IssueSource>,
     error_mode: ResolveErrorMode,
@@ -131,15 +161,15 @@ pub async fn cjs_resolve_source(
     let result = resolve(
         origin.origin_path().await?.parent(),
         ty.clone(),
-        *request,
+        request,
         options,
     );
 
     handle_resolve_source_error(
         result,
         ty,
-        *origin,
-        *request,
+        origin,
+        request,
         options,
         error_mode,
         issue_source,

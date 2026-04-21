@@ -13,6 +13,7 @@ pub mod async_chunk;
 pub mod bytes_source_transform;
 pub mod chunk;
 pub mod code_gen;
+mod directive;
 mod errors;
 pub mod json_source_transform;
 pub mod magic_identifier;
@@ -1310,10 +1311,12 @@ async fn merge_modules(
         /// The export syntax contexts in the current AST, which will be mapped to merged_ctxts
         reverse_module_contexts:
             FxHashMap<SyntaxContext, ResolvedVc<Box<dyn EcmascriptChunkPlaceable>>>,
-        /// For a given module, the `eval_context.imports.exports`. So for a given export, this
+        /// For a given module, the `eval_context.imports.exports_ids`. So for a given export, this
         /// allows looking up the corresponding local binding's name and context.
-        export_contexts:
-            &'a FxHashMap<ResolvedVc<Box<dyn EcmascriptChunkPlaceable>>, &'a FxHashMap<RcStr, Id>>,
+        export_contexts: &'a FxHashMap<
+            ResolvedVc<Box<dyn EcmascriptChunkPlaceable>>,
+            &'a FxHashMap<RcStr, (Id, Span)>,
+        >,
         /// A fresh global SyntaxContext for each module-local context, so that we can merge them
         /// into a single global AST.
         unique_contexts_cache: &'a mut FxHashMap<
@@ -1354,7 +1357,7 @@ async fn merge_modules(
                 // TODO looking up an Atom in a Map<RcStr, _>, would ideally work without creating a
                 // RcStr every time.
                 let sym_rc_str: RcStr = sym.as_str().into();
-                let (local, local_ctxt) = if let Some((local, local_ctxt)) =
+                let (local, local_ctxt) = if let Some(((local, local_ctxt), _)) =
                     eval_context_exports.get(&sym_rc_str)
                 {
                     (Some(local), *local_ctxt)
@@ -1755,10 +1758,10 @@ struct CodeGenResult {
     original_source_map: CodeGenResultOriginalSourceMap,
     minify: MinifyType,
     #[allow(clippy::type_complexity)]
-    /// (Map<Module, corresponding context for imports>, `eval_context.imports.exports`)
+    /// (Map<Module, corresponding context for imports>, `eval_context.imports.export_spans`)
     scope_hoisting_syntax_contexts: Option<(
         FxDashMap<ResolvedVc<Box<dyn EcmascriptChunkPlaceable + 'static>>, SyntaxContext>,
-        FxHashMap<RcStr, Id>,
+        FxHashMap<RcStr, (Id, Span)>,
     )>,
 }
 
@@ -1837,7 +1840,7 @@ async fn process_parse_result(
                                 .iter()
                                 .filter(|(_, e)| matches!(e, export::EsmExport::LocalBinding(_, _)))
                                 .map(|(name, e)| {
-                                    if let Some((sym, ctxt)) = export_contexts.get(name) {
+                                    if let Some(((sym, ctxt), _)) = export_contexts.get(name) {
                                         Ok((sym.clone(), *ctxt))
                                     } else {
                                         bail!("Couldn't find export {} for binding {:?}", name, e);

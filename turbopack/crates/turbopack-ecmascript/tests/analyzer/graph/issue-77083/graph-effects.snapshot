@@ -84,6 +84,10 @@
                                 ModuleValue {
                                     module: "./assert",
                                     annotations: None,
+                                    analyze_for_constants: false,
+                                    reference: Some(
+                                        1,
+                                    ),
                                 },
                             ),
                             Constant(
@@ -370,6 +374,10 @@
                 ModuleValue {
                     module: "./assert",
                     annotations: None,
+                    analyze_for_constants: false,
+                    reference: Some(
+                        1,
+                    ),
                 },
             ),
             Constant(
@@ -517,6 +525,10 @@
                 ModuleValue {
                     module: "./assert",
                     annotations: None,
+                    analyze_for_constants: false,
+                    reference: Some(
+                        1,
+                    ),
                 },
             ),
             Constant(

@@ -672,6 +672,7 @@
                 ),
             ],
             mutable: true,
+            missing_unknown: false,
         },
     ),
     (
@@ -729,6 +730,7 @@
                 ),
             ],
             mutable: true,
+            missing_unknown: false,
         },
     ),
     (
@@ -899,6 +901,7 @@
                     ),
                 ],
                 mutable: true,
+                missing_unknown: false,
             },
         ),
     ),

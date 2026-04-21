@@ -131,7 +131,7 @@ pub fn replace_builtin(value: &mut JsValue) -> bool {
             &mut JsValue::Array {
                 ref mut items,
                 mutable,
-                ..
+                total_nodes: _,
             } => {
                 fn items_to_alternatives(items: &mut Vec<JsValue>, prop: &mut JsValue) -> JsValue {
                     items.push(JsValue::unknown(
@@ -198,7 +198,8 @@ pub fn replace_builtin(value: &mut JsValue) -> bool {
             &mut JsValue::Object {
                 ref mut parts,
                 mutable,
-                ..
+                missing_unknown,
+                total_nodes: _,
             } => {
                 fn parts_to_alternatives(
                     parts: &mut Vec<ObjectPart>,
@@ -301,7 +302,11 @@ pub fn replace_builtin(value: &mut JsValue) -> bool {
                             }
                         }
                         if potential_values.is_empty() {
-                            *value = JsValue::Constant(ConstantValue::Undefined);
+                            if missing_unknown {
+                                *value = JsValue::unknown_empty(false, "missing object property");
+                            } else {
+                                *value = JsValue::Constant(ConstantValue::Undefined);
+                            }
                         } else {
                             *value = potential_values_to_alternatives(
                                 potential_values,
@@ -482,7 +487,12 @@ pub fn replace_builtin(value: &mut JsValue) -> bool {
             true
         }
         // match object literals
-        JsValue::Object { parts, mutable, .. }
+        JsValue::Object {
+            parts,
+            mutable,
+            missing_unknown,
+            total_nodes: _,
+        }
             // If the object contains any spread, we might be able to flatten that
             if parts
                 .iter()
@@ -493,11 +503,13 @@ pub fn replace_builtin(value: &mut JsValue) -> bool {
                     if let ObjectPart::Spread(JsValue::Object {
                         parts: inner_parts,
                         mutable: inner_mutable,
+                        missing_unknown: inner_missing_unknown,
                         ..
                     }) = part
                     {
                         parts.extend(inner_parts);
                         *mutable |= inner_mutable;
+                        *missing_unknown |= inner_missing_unknown;
                     } else {
                         parts.push(part);
                     }

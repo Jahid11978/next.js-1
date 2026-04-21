@@ -9,6 +9,13 @@ use std::{
 };
 
 use anyhow::{Result, bail};
+use bincode::{
+    Decode, Encode,
+    de::Decoder,
+    enc::Encoder,
+    error::{DecodeError, EncodeError},
+    impl_borrow_decode,
+};
 use either::Either;
 use num_bigint::BigInt;
 use num_traits::identities::Zero;
@@ -25,7 +32,7 @@ use swc_core::{
 };
 use turbo_esregex::EsRegex;
 use turbo_rcstr::RcStr;
-use turbo_tasks::{FxIndexMap, FxIndexSet, Vc};
+use turbo_tasks::{FxIndexMap, FxIndexSet, NonLocalValue, Vc, trace::TraceRawVcs};
 use turbopack_core::compile_time_info::{
     CompileTimeDefineValue, DefinableNameSegmentRef, DefinableNameSegmentRefs, FreeVarReference,
     TotalOrderF64,
@@ -59,7 +66,7 @@ impl Default for ObjectPart {
     }
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Encode, Decode, TraceRawVcs)]
 pub struct ConstantNumber(pub TotalOrderF64);
 
 impl ConstantNumber {
@@ -74,11 +81,26 @@ impl From<f64> for ConstantNumber {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, TraceRawVcs)]
 pub enum ConstantString {
-    Atom(Atom),
+    Atom(#[turbo_tasks(trace_ignore)] Atom),
     RcStr(RcStr),
 }
+unsafe impl NonLocalValue for ConstantString {}
+impl Encode for ConstantString {
+    fn encode<E: Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
+        match self {
+            ConstantString::Atom(s) => s.as_str().encode(encoder),
+            ConstantString::RcStr(s) => s.as_str().encode(encoder),
+        }
+    }
+}
+impl<Context> Decode<Context> for ConstantString {
+    fn decode<D: Decoder<Context = Context>>(decoder: &mut D) -> Result<Self, DecodeError> {
+        Ok(Self::RcStr(Decode::decode(decoder)?))
+    }
+}
+impl_borrow_decode!(ConstantString);
 
 impl ConstantString {
     pub fn as_str(&self) -> &str {
@@ -151,7 +173,7 @@ impl From<RcStr> for ConstantString {
     }
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Default, TraceRawVcs, Encode, Decode)]
 pub enum ConstantValue {
     #[default]
     Undefined,
@@ -160,9 +182,18 @@ pub enum ConstantValue {
     True,
     False,
     Null,
-    BigInt(Box<BigInt>),
-    Regex(Box<(Atom, Atom)>),
+    BigInt(
+        #[turbo_tasks(trace_ignore)]
+        #[bincode(with_serde)]
+        Box<BigInt>,
+    ),
+    Regex(
+        #[turbo_tasks(trace_ignore)]
+        #[bincode(with_serde)]
+        Box<(Atom, Atom)>,
+    ),
 }
+unsafe impl NonLocalValue for ConstantValue {}
 
 impl ConstantValue {
     pub fn as_str(&self) -> Option<&str> {
@@ -270,6 +301,12 @@ impl Display for ConstantValue {
 pub struct ModuleValue {
     pub module: Wtf8Atom,
     pub annotations: Option<Arc<ImportAnnotations>>,
+    /// Whether to analyze this module for constants
+    // TODO this is a hack: ideally we'd have truly "bidirectional linking" instead of the current
+    // `early_visitor` plus `visitor` setup. Then this could just be implemented with a rewrite
+    // rule for `Member(ModuleValue, prop) if prop.as_str().is_upper_case() => { ... }`
+    pub analyze_for_constants: bool,
+    pub reference: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -424,13 +461,21 @@ pub enum JsValue {
     Array {
         total_nodes: u32,
         items: Vec<JsValue>,
+        /// This value might be inaccurate because it can change after declaration. So reads always
+        /// are an `<value> | Unknown` alternative
         mutable: bool,
     },
-    /// An object of nested values
+    //// An object of nested values
     Object {
         total_nodes: u32,
         parts: Vec<ObjectPart>,
+        /// This value might be inaccurate because it can change after declaration. So reads always
+        /// are an `<value> | Unknown` alternative
         mutable: bool,
+        /// If true, any missing properties are treated as unknown, instead of undefined. Note that
+        /// this is only interesting with `mutable: false`. Because with `mutable: true`, all
+        /// properties are a `<value> | Unknown` alternative anyway.
+        missing_unknown: bool,
     },
     /// A list of alternative values
     Alternatives {
@@ -597,6 +642,7 @@ impl TryFrom<&CompileTimeDefineValue> for JsValue {
                         })
                         .collect::<Result<Vec<_>>>()?,
                     mutable: false,
+                    missing_unknown: false,
                 };
                 js_value.update_total_nodes();
                 return Ok(js_value);
@@ -693,7 +739,11 @@ impl Display for JsValue {
         match self {
             JsValue::Constant(v) => write!(f, "{v}"),
             JsValue::Url(url, kind) => write!(f, "{url} {kind}"),
-            JsValue::Array { items, mutable, .. } => write!(
+            JsValue::Array {
+                items,
+                mutable,
+                total_nodes: _,
+            } => write!(
                 f,
                 "{}[{}]",
                 if *mutable { "" } else { "frozen " },
@@ -703,10 +753,20 @@ impl Display for JsValue {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            JsValue::Object { parts, mutable, .. } => write!(
+            JsValue::Object {
+                parts,
+                mutable,
+                missing_unknown,
+                total_nodes: _,
+            } => write!(
                 f,
-                "{}{{{}}}",
+                "{}{}{{{}}}",
                 if *mutable { "" } else { "frozen " },
+                if *missing_unknown {
+                    "missing_unknown "
+                } else {
+                    ""
+                },
                 parts
                     .iter()
                     .map(|v| v.to_string())
@@ -800,15 +860,22 @@ impl Display for JsValue {
             JsValue::Module(ModuleValue {
                 module: name,
                 annotations,
+                analyze_for_constants,
+                reference: _,
             }) => {
                 write!(
                     f,
-                    "Module({}, {})",
+                    "Module({}, {}{})",
                     name.to_string_lossy(),
                     if let Some(annotations) = annotations {
                         Either::Left(annotations)
                     } else {
                         Either::Right("{}")
+                    },
+                    if *analyze_for_constants {
+                        ", analyze for constants"
+                    } else {
+                        ""
                     }
                 )
             }
@@ -1059,6 +1126,7 @@ impl JsValue {
                 .sum::<u32>(),
             parts: list,
             mutable: true,
+            missing_unknown: false,
         }
     }
 
@@ -1073,6 +1141,22 @@ impl JsValue {
                 .sum::<u32>(),
             parts: list,
             mutable: false,
+            missing_unknown: false,
+        }
+    }
+
+    pub fn frozen_object_missing_unknown(list: Vec<ObjectPart>) -> Self {
+        Self::Object {
+            total_nodes: 1 + list
+                .iter()
+                .map(|v| match v {
+                    ObjectPart::KeyValue(k, v) => k.total_nodes() + v.total_nodes(),
+                    ObjectPart::Spread(s) => s.total_nodes(),
+                })
+                .sum::<u32>(),
+            parts: list,
+            mutable: false,
+            missing_unknown: true,
         }
     }
 
@@ -1239,6 +1323,7 @@ impl JsValue {
                 total_nodes: c,
                 parts,
                 mutable: _,
+                missing_unknown: _,
             } => {
                 *c = 1 + parts
                     .iter()
@@ -1356,7 +1441,11 @@ impl JsValue {
     ) -> String {
         match self {
             JsValue::Constant(v) => format!("{v}"),
-            JsValue::Array { items, mutable, .. } => format!(
+            JsValue::Array {
+                items,
+                mutable,
+                total_nodes: _,
+            } => format!(
                 "{}[{}]",
                 if *mutable { "" } else { "frozen " },
                 pretty_join(
@@ -1375,9 +1464,19 @@ impl JsValue {
                     ""
                 )
             ),
-            JsValue::Object { parts, mutable, .. } => format!(
-                "{}{{{}}}",
+            JsValue::Object {
+                parts,
+                mutable,
+                missing_unknown,
+                total_nodes: _,
+            } => format!(
+                "{}{}{{{}}}",
                 if *mutable { "" } else { "frozen " },
+                if *missing_unknown {
+                    "missing_unknown "
+                } else {
+                    ""
+                },
                 pretty_join(
                     &parts
                         .iter()
@@ -1628,14 +1727,21 @@ impl JsValue {
             JsValue::Module(ModuleValue {
                 module: name,
                 annotations,
+                analyze_for_constants,
+                reference: _,
             }) => {
                 format!(
-                    "module<{}, {}>",
+                    "module<{}, {}{}>",
                     name.to_string_lossy(),
                     if let Some(annotations) = annotations {
                         Either::Left(annotations)
                     } else {
                         Either::Right("{}")
+                    },
+                    if *analyze_for_constants {
+                        ", analyze for constants"
+                    } else {
+                        ""
                     }
                 )
             }
@@ -3122,13 +3228,15 @@ impl JsValue {
                     total_nodes: lc,
                     parts: lp,
                     mutable: lm,
+                    missing_unknown: lmu,
                 },
                 JsValue::Object {
                     total_nodes: rc,
                     parts: rp,
                     mutable: rm,
+                    missing_unknown: rmu,
                 },
-            ) => lc == rc && lm == rm && all_parts_similar(lp, rp, depth - 1),
+            ) => lc == rc && lm == rm && lmu == rmu && all_parts_similar(lp, rp, depth - 1),
             (JsValue::Url(l, kl), JsValue::Url(r, kr)) => l == r && kl == kr,
             (
                 JsValue::Alternatives {
@@ -3174,12 +3282,16 @@ impl JsValue {
                 JsValue::Module(ModuleValue {
                     module: l,
                     annotations: la,
+                    analyze_for_constants: lc,
+                    reference: lr,
                 }),
                 JsValue::Module(ModuleValue {
                     module: r,
                     annotations: ra,
+                    analyze_for_constants: rc,
+                    reference: rr,
                 }),
-            ) => l == r && la == ra,
+            ) => l == r && la == ra && lc == rc && lr == rr,
             (JsValue::WellKnownObject(l), JsValue::WellKnownObject(r)) => l == r,
             (JsValue::WellKnownFunction(l), JsValue::WellKnownFunction(r)) => l == r,
             (
@@ -3291,9 +3403,13 @@ impl JsValue {
             JsValue::Module(ModuleValue {
                 module: v,
                 annotations: a,
+                analyze_for_constants: c,
+                reference: r,
             }) => {
                 Hash::hash(v, state);
                 Hash::hash(a, state);
+                Hash::hash(c, state);
+                Hash::hash(r, state);
             }
             JsValue::WellKnownObject(v) => Hash::hash(v, state),
             JsValue::WellKnownFunction(v) => Hash::hash(v, state),
@@ -3591,6 +3707,8 @@ pub mod test_utils {
                     JsValue::promise(JsValue::Module(ModuleValue {
                         module: v.as_atom().into_owned().into(),
                         annotations: None,
+                        analyze_for_constants: false,
+                        reference: None,
                     }))
                 }
                 _ => v.into_unknown(true, "import() non constant"),

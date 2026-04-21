@@ -28,12 +28,13 @@ use super::{JsValue, ModuleValue, top_level_await::has_top_level_await};
 use crate::{
     SpecifiedModuleType,
     analyzer::{
-        ConstantValue, ObjectPart,
+        ConstantString, ConstantValue, ObjectPart,
         graph::{AssignmentScope, AssignmentScopes, EvalContext},
         is_unresolved,
     },
     magic_identifier::{MAGIC_IDENTIFIER_DEFAULT_EXPORT, MAGIC_IDENTIFIER_DEFAULT_EXPORT_ATOM},
     references::{
+        cross_module_constants::is_import_name_eligible_for_exports,
         esm::{EsmAssetReference, EsmExport, Liveness},
         util::{SpecifiedChunkingType, parse_chunking_type_annotation},
     },
@@ -47,6 +48,7 @@ pub struct ImportAnnotations {
     #[turbo_tasks(trace_ignore)]
     #[bincode(with_serde)]
     map: BTreeMap<Wtf8Atom, Wtf8Atom>,
+
     /// Parsed turbopack loader configuration from import attributes.
     /// e.g. `import "file" with { turbopackLoader: "raw-loader" }`
     #[turbo_tasks(trace_ignore)]
@@ -55,6 +57,8 @@ pub struct ImportAnnotations {
     turbopack_rename_as: Option<RcStr>,
     turbopack_module_type: Option<RcStr>,
     chunking_type: Option<SpecifiedChunkingType>,
+
+    turbopack_constants: bool,
 }
 
 /// Enables a specified transition for the annotated import
@@ -75,7 +79,7 @@ impl ImportAnnotations {
         let mut turbopack_rename_as: Option<RcStr> = None;
         let mut turbopack_module_type: Option<RcStr> = None;
         let mut chunking_type: Option<SpecifiedChunkingType> = None;
-
+        let mut turbopack_constants: bool = false;
         for prop in &with.props {
             let Some(kv) = prop.as_prop().and_then(|p| p.as_key_value()) else {
                 continue;
@@ -124,6 +128,11 @@ impl ImportAnnotations {
                         );
                     }
                 }
+                "turbopackConstants" => {
+                    if let Some(Lit::Str(s)) = kv.value.as_lit() {
+                        turbopack_constants = s.value.to_string_lossy() == "true";
+                    }
+                }
                 _ => {
                     // For all other keys, only accept string values (per spec)
                     if let Some(Lit::Str(str)) = kv.value.as_lit() {
@@ -148,6 +157,7 @@ impl ImportAnnotations {
             || turbopack_rename_as.is_some()
             || turbopack_module_type.is_some()
             || chunking_type.is_some()
+            || turbopack_constants
         {
             Some(ImportAnnotations {
                 map,
@@ -155,6 +165,7 @@ impl ImportAnnotations {
                 turbopack_rename_as,
                 turbopack_module_type,
                 chunking_type,
+                turbopack_constants,
             })
         } else {
             None
@@ -193,6 +204,7 @@ impl ImportAnnotations {
                 turbopack_rename_as: None,
                 turbopack_module_type: None,
                 chunking_type: None,
+                turbopack_constants: false,
             })
         } else {
             None
@@ -233,6 +245,11 @@ impl ImportAnnotations {
     /// Returns true if a turbopack loader is configured
     pub fn has_turbopack_loader(&self) -> bool {
         self.turbopack_loader.is_some()
+    }
+
+    /// Returns true if there is a turbopackConstants attribute
+    pub fn has_turbopack_constants(&self) -> bool {
+        self.turbopack_constants
     }
 
     pub fn get(&self, key: &Wtf8Atom) -> Option<&Wtf8Atom> {
@@ -368,7 +385,7 @@ pub(crate) struct ImportMap {
     namespace_imports: FxIndexMap<Id, usize>,
 
     /// Map from exported name to the export
-    exports: BTreeMap<RcStr, Export>,
+    pub(crate) exports: BTreeMap<RcStr, Export>,
 
     /// List of namespace re-exports
     reexport_namespaces: Vec<usize>,
@@ -409,7 +426,7 @@ pub(crate) struct ImportMap {
     pub(crate) import_usage: FxHashMap<usize, ImportUsage>,
 
     /// Map from exported name to local binding id (includes the syntax context).
-    pub(crate) exports_ids: FxHashMap<RcStr, Id>,
+    pub(crate) exports_ids: FxHashMap<RcStr, (Id, Span)>,
 }
 
 /// Represents a collection of [webpack-style "magic comments"][magic] that override import
@@ -525,29 +542,50 @@ impl ImportMap {
         }
     }
 
-    pub fn get_import(&self, id: &Id) -> Option<JsValue> {
-        if let Some((i, i_sym)) = self.imports.get(id) {
-            let r = &self.references[*i];
-            return Some(JsValue::member(
+    pub fn get_import_for_idx(
+        &self,
+        esm_reference_idx: usize,
+        export: Option<ConstantString>,
+    ) -> JsValue {
+        let r = &self.references[esm_reference_idx];
+        if let Some(export) = export {
+            JsValue::member(
                 Box::new(JsValue::Module(ModuleValue {
                     module: r.module_path.clone(),
                     annotations: r.annotations.clone(),
+                    reference: Some(esm_reference_idx),
+                    analyze_for_constants: is_import_name_eligible_for_exports(export.as_str()),
                 })),
-                Box::new(i_sym.clone().into()),
-            ));
-        }
-        if let Some(i) = self.namespace_imports.get(id) {
-            let r = &self.references[*i];
-            return Some(JsValue::Module(ModuleValue {
+                Box::new(JsValue::Constant(ConstantValue::Str(export))),
+            )
+        } else {
+            JsValue::Module(ModuleValue {
                 module: r.module_path.clone(),
                 annotations: r.annotations.clone(),
-            }));
+                reference: Some(esm_reference_idx),
+                analyze_for_constants: false,
+            })
+        }
+    }
+
+    pub fn get_import(&self, id: &Id) -> Option<JsValue> {
+        if let Some((i, i_sym)) = self.imports.get(id) {
+            return Some(self.get_import_for_idx(*i, Some(i_sym.clone().into())));
+        }
+        if let Some(i) = self.namespace_imports.get(id) {
+            return Some(self.get_import_for_idx(*i, None));
         }
         None
     }
 
     pub fn get_attributes(&self, span: Span) -> &ImportAttributes {
         self.attributes.get(&span.lo).unwrap_or_default()
+    }
+
+    pub fn get_annotations(&self, idx: usize) -> Option<&Arc<ImportAnnotations>> {
+        self.references
+            .get_index(idx)
+            .and_then(|r| r.annotations.as_ref())
     }
 
     pub fn get_binding(&self, id: &Id) -> Option<(usize, Option<&Atom>)> {
@@ -591,9 +629,15 @@ impl ImportMap {
                                 Liveness::Mutable
                             } else {
                                 eval_context.imports.get_export_ident_liveness(
-                                    self.exports_ids.get(name).cloned().with_context(|| {
-                                        format!("Exported binding {name} not found in exports_ids")
-                                    })?,
+                                    self.exports_ids
+                                        .get(name)
+                                        .cloned()
+                                        .with_context(|| {
+                                            format!(
+                                                "Exported binding {name} not found in exports_ids"
+                                            )
+                                        })?
+                                        .0,
                                 )
                             },
                         ),
@@ -1013,7 +1057,9 @@ impl Visit for Analyzer<'_> {
                 self.data
                     .exports
                     .insert(name.clone(), Export::LocalBinding(name.clone(), false));
-                self.data.exports_ids.insert(name.clone(), n.ident.to_id());
+                self.data
+                    .exports_ids
+                    .insert(name.clone(), (n.ident.to_id(), n.ident.span));
                 self.program_decl_usage
                     .exports
                     .insert(name, n.ident.to_id());
@@ -1023,7 +1069,9 @@ impl Visit for Analyzer<'_> {
                 self.data
                     .exports
                     .insert(name.clone(), Export::LocalBinding(name.clone(), false));
-                self.data.exports_ids.insert(name.clone(), n.ident.to_id());
+                self.data
+                    .exports_ids
+                    .insert(name.clone(), (n.ident.to_id(), n.ident.span));
                 self.program_decl_usage
                     .exports
                     .insert(name, n.ident.to_id());
@@ -1035,7 +1083,9 @@ impl Visit for Analyzer<'_> {
                     self.data
                         .exports
                         .insert(name.clone(), Export::LocalBinding(name.clone(), false));
-                    self.data.exports_ids.insert(name.clone(), id.clone());
+                    self.data
+                        .exports_ids
+                        .insert(name.clone(), (id.clone(), n.span));
                     self.program_decl_usage.exports.insert(name, id);
                 }
             }
@@ -1081,7 +1131,9 @@ impl Visit for Analyzer<'_> {
             rcstr!("default"),
             Export::LocalBinding(RcStr::from(id.0.as_str()), false),
         );
-        self.data.exports_ids.insert(rcstr!("default"), id.clone());
+        self.data
+            .exports_ids
+            .insert(rcstr!("default"), (id.clone(), n.span));
         self.program_decl_usage
             .exports
             .insert(rcstr!("default"), id);
@@ -1098,9 +1150,12 @@ impl Visit for Analyzer<'_> {
         self.data.exports_ids.insert(
             rcstr!("default"),
             (
-                // `EsmModuleItem::code_generation` inserts this variable.
-                MAGIC_IDENTIFIER_DEFAULT_EXPORT_ATOM.clone(),
-                SyntaxContext::empty(),
+                (
+                    // `EsmModuleItem::code_generation` inserts this variable.
+                    MAGIC_IDENTIFIER_DEFAULT_EXPORT_ATOM.clone(),
+                    SyntaxContext::empty(),
+                ),
+                n.span,
             ),
         );
         n.visit_children_with(self);
@@ -1115,7 +1170,7 @@ impl Visit for Analyzer<'_> {
         let exported = RcStr::from(n.exported.as_ref().unwrap_or(&n.orig).atom().as_str());
         self.data
             .exports_ids
-            .insert(exported.clone(), local.to_id());
+            .insert(exported.clone(), (local.to_id(), n.span));
         self.program_decl_usage
             .exports
             .insert(exported, local.to_id());
@@ -1127,7 +1182,7 @@ impl Visit for Analyzer<'_> {
 
         self.data
             .exports_ids
-            .insert(rcstr!("default"), n.exported.to_id());
+            .insert(rcstr!("default"), (n.exported.to_id(), n.exported.span));
         n.visit_children_with(self);
     }
 

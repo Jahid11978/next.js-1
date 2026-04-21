@@ -151,15 +151,22 @@ pub async fn well_known_function_call(
 fn object_assign(args: Vec<JsValue>) -> JsValue {
     if args.iter().all(|arg| matches!(arg, JsValue::Object { .. })) {
         if let Some(mut merged_object) = args.into_iter().reduce(|mut acc, cur| {
-            if let JsValue::Object { parts, mutable, .. } = &mut acc
+            if let JsValue::Object {
+                parts,
+                mutable,
+                missing_unknown,
+                ..
+            } = &mut acc
                 && let JsValue::Object {
                     parts: next_parts,
                     mutable: next_mutable,
+                    missing_unknown: next_missing_unknown,
                     ..
                 } = &cur
             {
                 parts.extend_from_slice(next_parts);
                 *mutable |= *next_mutable;
+                *missing_unknown |= *next_missing_unknown;
             }
             acc
         }) {
@@ -359,6 +366,8 @@ pub fn import(args: Vec<JsValue>) -> JsValue {
             JsValue::promise(JsValue::Module(ModuleValue {
                 module: v.as_atom().into_owned().into(),
                 annotations: None,
+                analyze_for_constants: false,
+                reference: None,
             }))
         }
         _ => JsValue::unknown(
@@ -380,6 +389,8 @@ fn require(args: Vec<JsValue>) -> JsValue {
             JsValue::Module(ModuleValue {
                 module: s.into(),
                 annotations: None,
+                analyze_for_constants: false,
+                reference: None,
             })
         } else {
             JsValue::unknown(
@@ -448,6 +459,8 @@ fn require_context_require(val: RequireContextValue, args: Vec<JsValue>) -> Resu
     Ok(JsValue::Module(ModuleValue {
         module: m.to_string().into(),
         annotations: None,
+        analyze_for_constants: false,
+        reference: None,
     }))
 }
 

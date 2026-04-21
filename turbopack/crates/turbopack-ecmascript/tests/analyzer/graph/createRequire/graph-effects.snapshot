@@ -96,6 +96,10 @@
             ModuleValue {
                 module: "node:module",
                 annotations: None,
+                analyze_for_constants: false,
+                reference: Some(
+                    1,
+                ),
             },
         ),
         prop: Constant(
@@ -304,6 +308,10 @@
             ModuleValue {
                 module: "node:module",
                 annotations: None,
+                analyze_for_constants: false,
+                reference: Some(
+                    1,
+                ),
             },
         ),
         prop: Constant(

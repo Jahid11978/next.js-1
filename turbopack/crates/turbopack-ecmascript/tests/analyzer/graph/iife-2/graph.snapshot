@@ -113,6 +113,7 @@
             total_nodes: 1,
             parts: [],
             mutable: true,
+            missing_unknown: false,
         },
     ),
 ]

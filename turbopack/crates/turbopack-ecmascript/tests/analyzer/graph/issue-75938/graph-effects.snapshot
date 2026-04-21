@@ -72,6 +72,10 @@
                 ModuleValue {
                     module: "react",
                     annotations: None,
+                    analyze_for_constants: false,
+                    reference: Some(
+                        3,
+                    ),
                 },
             ),
             Constant(
@@ -575,6 +579,10 @@
                 ModuleValue {
                     module: "https://esm.sh/preact/jsx-runtime",
                     annotations: None,
+                    analyze_for_constants: false,
+                    reference: Some(
+                        1,
+                    ),
                 },
             ),
             Constant(
@@ -632,6 +640,7 @@
                         ),
                     ],
                     mutable: true,
+                    missing_unknown: false,
                 },
             ),
         ],
@@ -949,6 +958,10 @@
                                     ModuleValue {
                                         module: "./external",
                                         annotations: None,
+                                        analyze_for_constants: false,
+                                        reference: Some(
+                                            5,
+                                        ),
                                     },
                                 ),
                                 Constant(
@@ -1070,6 +1083,10 @@
                                                 ModuleValue {
                                                     module: "./external",
                                                     annotations: None,
+                                                    analyze_for_constants: false,
+                                                    reference: Some(
+                                                        5,
+                                                    ),
                                                 },
                                             ),
                                             Constant(
