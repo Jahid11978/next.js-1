@@ -1,5 +1,5 @@
-(globalThis["TURBOPACK"] || (globalThis["TURBOPACK"] = [])).push(["output/780ce_turbopack-tests_tests_snapshot_comptime_cross-module-cycle_input_418e833a._.js",
-"[project]/turbopack/crates/turbopack-tests/tests/snapshot/comptime/cross-module-cycle/input/other.js [test] (ecmascript)", ((__turbopack_context__) => {
+(globalThis["TURBOPACK"] || (globalThis["TURBOPACK"] = [])).push(["output/1do3_crates_turbopack-tests_tests_snapshot_comptime_cross-module-cycle_input_0juf-pm._.js",
+"[project]/turbopack/crates/turbopack-tests/tests/snapshot/comptime/cross-module-cycle/input/other.js [test] (ecmascript)", (function(__turbopack_context__){
 "use strict";
 
 __turbopack_context__.s([
@@ -14,7 +14,7 @@ function foo1(left, right) {
 }
 ;
 }),
-"[project]/turbopack/crates/turbopack-tests/tests/snapshot/comptime/cross-module-cycle/input/index.js [test] (ecmascript)", ((__turbopack_context__) => {
+"[project]/turbopack/crates/turbopack-tests/tests/snapshot/comptime/cross-module-cycle/input/index.js [test] (ecmascript)", (function(__turbopack_context__){
 "use strict";
 
 __turbopack_context__.s([]);
@@ -24,4 +24,4 @@ console.log(__TURBOPACK__imported__module__$5b$project$5d2f$turbopack$2f$crates$
 }),
 ]);
 
-//# sourceMappingURL=780ce_turbopack-tests_tests_snapshot_comptime_cross-module-cycle_input_418e833a._.js.map
+//# sourceMappingURL=1do3_crates_turbopack-tests_tests_snapshot_comptime_cross-module-cycle_input_0juf-pm._.js.map

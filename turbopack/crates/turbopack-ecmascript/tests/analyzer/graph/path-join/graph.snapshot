@@ -115,7 +115,7 @@
                     annotations: None,
                     analyze_for_constants: false,
                     reference: Some(
-                        2,
+                        3,
                     ),
                 },
             ),
