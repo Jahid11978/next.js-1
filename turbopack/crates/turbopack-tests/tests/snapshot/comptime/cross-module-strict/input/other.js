@@ -1,4 +1,4 @@
-'use turbopack constants'
+'use turbopack: constants'
 
 export const SOME_VALUE = 'x'
 
