@@ -395,7 +395,6 @@ impl EcmascriptModulePartAsset {
     }
 }
 
-#[turbo_tasks::function]
 fn analyze(
     module: Vc<EcmascriptModuleAsset>,
     part: ModulePart,

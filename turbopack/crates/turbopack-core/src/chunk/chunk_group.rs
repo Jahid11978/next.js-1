@@ -131,13 +131,26 @@ pub async fn make_chunk_group(
         })
         .try_join()
         .await?;
-    let async_loader_chunk_items = async_loaders.iter().map(|&chunk_item| {
-        ChunkItemOrBatchWithAsyncModuleInfo::ChunkItem(ChunkItemWithAsyncModuleInfo {
-            chunk_item,
-            module: None,
-            async_info: None,
+    let async_loader_chunk_items = async_loaders
+        .iter()
+        .map(async |&chunk_item| {
+            let chunk_type = chunk_item
+                .into_trait_ref()
+                .await?
+                .ty()
+                .to_resolved()
+                .await?;
+            Ok::<_, anyhow::Error>(ChunkItemOrBatchWithAsyncModuleInfo::ChunkItem(
+                ChunkItemWithAsyncModuleInfo {
+                    chunk_item,
+                    chunk_type,
+                    module: None,
+                    async_info: None,
+                },
+            ))
         })
-    });
+        .try_join()
+        .await?;
 
     let referenced_output_assets = traced_modules
         .into_iter()
@@ -175,14 +188,13 @@ pub async fn references_to_output_assets(
 ) -> Result<Vc<OutputAssetsWithReferenced>> {
     let output_assets = references
         .into_iter()
-        .map(|reference| reference.resolve_reference().primary_output_assets())
+        .map(|reference| async { Ok(reference.resolve_reference().await?.primary_output_assets()) })
         .try_join()
         .await?;
     let mut set = HashSet::new();
     let output_assets = output_assets
-        .iter()
+        .into_iter()
         .flatten()
-        .copied()
         .filter(|&asset| set.insert(asset))
         .collect::<Vec<_>>();
     Ok(OutputAssetsWithReferenced {

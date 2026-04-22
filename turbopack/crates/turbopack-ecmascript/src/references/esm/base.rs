@@ -282,7 +282,7 @@ impl ReferencedAsset {
     pub async fn from_resolve_result(resolve_result: Vc<ModuleResolveResult>) -> Result<Vc<Self>> {
         // TODO handle multiple keyed results
         let result = resolve_result.await?;
-        if result.is_unresolvable_ref() {
+        if result.is_unresolvable() {
             return Ok(ReferencedAsset::Unresolvable.cell());
         }
         for (_, result) in result.primary.iter() {
@@ -424,7 +424,7 @@ impl ModuleReference for EsmAssetReference {
                 loader_request,
                 origin.resolve_options(),
             );
-            let loader_fs_path = if let Some(source) = *resolved.first_source().await? {
+            let loader_fs_path = if let Some(source) = resolved.await?.first_source() {
                 (*source.ident().path().await?).clone()
             } else {
                 bail!("Unable to resolve turbopackLoader '{}'", loader.loader);
@@ -493,7 +493,7 @@ impl ModuleReference for EsmAssetReference {
         .await?;
 
         if let Some(ModulePart::Export(export_name)) = &self.export_name {
-            for &module in result.primary_modules().await? {
+            for &module in result.await?.primary_modules().await?.iter() {
                 if let Some(module) = ResolvedVc::try_downcast(module)
                     && *is_export_missing(*module, export_name.clone()).await?
                 {

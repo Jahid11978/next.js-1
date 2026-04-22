@@ -259,7 +259,7 @@ async fn detect_react_compiler_target(
         node_cjs_resolve_options(project_path.root().owned().await?),
     );
 
-    let Some(source) = &*react_pkg_result.first_source().await? else {
+    let Some(source) = react_pkg_result.await?.first_source() else {
         return Ok(None);
     };
 
@@ -335,7 +335,7 @@ pub async fn resolve_babel_plugin_react_compiler(
         ))),
         node_cjs_resolve_options(project_path.root().owned().await?),
     );
-    let Some(source) = &*babel_plugin_result.first_source().await? else {
+    let Some(source) = babel_plugin_result.await?.first_source() else {
         BabelPluginReactCompilerResolutionIssue {
             failed_resolution: rcstr!(BABEL_PLUGIN_REACT_COMPILER),
             config_file_path: next_config

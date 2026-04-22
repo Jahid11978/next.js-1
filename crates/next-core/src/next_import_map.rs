@@ -1269,7 +1269,7 @@ pub async fn try_get_next_package(
         Request::parse(Pattern::Constant(rcstr!("next/package.json"))),
         node_cjs_resolve_options(root.clone()),
     );
-    if let Some(source) = &*result.first_source().await? {
+    if let Some(source) = result.await?.first_source() {
         Ok(Vc::cell(Some(source.ident().path().await?.parent())))
     } else {
         MissingNextFolderIssue {
