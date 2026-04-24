@@ -1,8 +1,8 @@
 use std::collections::{BTreeSet, VecDeque};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::json;
 use tracing::{Instrument, Level, Span};
 use turbo_rcstr::{RcStr, rcstr};
@@ -19,7 +19,7 @@ use turbopack_core::{
     asset::{Asset, AssetContent},
     chunk::ChunkingType,
     issue::{Issue, IssueExt, IssueSeverity, IssueStage, StyledString},
-    module::Module,
+    module::{Module, Modules},
     module_graph::{GraphTraversalAction, ModuleGraph},
     output::{OutputAsset, OutputAssets, OutputAssetsReference},
 };
@@ -262,9 +262,12 @@ impl Asset for NftJsonAsset {
             )
             .await?;
             // Collect referenced assets and externals from module graph
-            // TODO pass exclude_glob
-            let all_modules =
-                traced_modules_for_entries(this.module_graph, &this.entry_modules).await?;
+            let all_modules = traced_modules_for_entries(
+                *this.module_graph,
+                Vc::cell(this.entry_modules.clone()),
+                exclude_glob,
+            )
+            .await?;
 
             for referenced in all_assets
                 .iter()
@@ -410,32 +413,74 @@ impl Asset for NftJsonAsset {
     }
 }
 
+#[turbo_tasks::function]
 async fn traced_modules_for_entries(
-    module_graph: ResolvedVc<ModuleGraph>,
-    entry_modules: &[ResolvedVc<Box<dyn Module>>],
-) -> Result<Vec<ResolvedVc<Box<dyn Module>>>> {
-    let mut result = vec![];
+    module_graph: Vc<ModuleGraph>,
+    entry_modules: Vc<Modules>,
+    exclude_glob: Option<Vc<Glob>>,
+) -> Result<Vc<Modules>> {
+    let exclude_glob = if let Some(exclude_glob) = exclude_glob {
+        Some(exclude_glob.await?)
+    } else {
+        None
+    };
+    let module_paths = if exclude_glob.is_some() {
+        Some(module_paths_for_graph(module_graph).await?)
+    } else {
+        None
+    };
 
+    let mut result = vec![];
     let mut is_traced = FxHashSet::default();
 
     module_graph.await?.traverse_edges_dfs(
-        entry_modules.iter().copied(),
+        entry_modules.await?.iter().copied(),
         &mut (),
         |parent, target, _| {
             let Some((parent, ref_data)) = parent else {
                 return Ok(GraphTraversalAction::Continue);
             };
 
+            if let Some(exclude_glob) = &exclude_glob
+                && exclude_glob.matches(
+                    &module_paths
+                        .as_ref()
+                        .unwrap()
+                        .get(&target)
+                        .context("missing path for module")?
+                        .path,
+                )
+            {
+                return Ok(GraphTraversalAction::Skip);
+            }
+
             if ref_data.chunking_type == ChunkingType::Traced || is_traced.contains(&parent) {
                 is_traced.insert(target);
                 result.push(target);
-            }
+            };
             Ok(GraphTraversalAction::Continue)
         },
         |_, _, _| Ok(()),
     )?;
 
-    Ok(result)
+    Ok(Vc::cell(result))
+}
+
+#[turbo_tasks::value(transparent)]
+struct ModulePaths(FxHashMap<ResolvedVc<Box<dyn Module>>, ReadRef<FileSystemPath>>);
+/// This caches the paths for all modules in the graph so that we don't have to do it once per page.
+#[turbo_tasks::function]
+async fn module_paths_for_graph(module_graph: Vc<ModuleGraph>) -> Result<Vc<ModulePaths>> {
+    Ok(Vc::cell(
+        module_graph
+            .await?
+            .iter_nodes()
+            .map(async |module| Ok((module, module.ident().path().await?)))
+            .try_join()
+            .await?
+            .into_iter()
+            .collect(),
+    ))
 }
 
 /// The globs defined in the next.config.mjs are relative to the project root.
