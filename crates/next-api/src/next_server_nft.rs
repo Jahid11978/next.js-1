@@ -108,21 +108,27 @@ impl Asset for ServerNftJsonAsset {
             .await?
             .join(&this.project.node_root().await?.path)?;
 
-        let mut server_output_assets = traced_modules_for_entries(
-            self.module_graph(),
-            self.entries(),
-            Some(self.ignores()),
-            true,
+        let module_graph = ModuleGraph::from_graphs(
+            vec![SingleModuleGraph::new_with_traced_entries(
+                ResolvedVc::cell(vec![ChunkGroupEntry::Entry(self.entries().owned().await?)]),
+                true,
+                false,
+            )],
+            None,
         )
-        .await?
-        .iter()
-        .map(async |m| {
-            base_dir
-                .get_relative_path_to(&m.ident().await?.path)
-                .context("failed to compute relative path for server NFT JSON")
-        })
-        .try_join()
-        .await?;
+        .connect();
+
+        let mut server_output_assets =
+            traced_modules_for_entries(module_graph, self.entries(), Some(self.ignores()), true)
+                .await?
+                .iter()
+                .map(async |m| {
+                    base_dir
+                        .get_relative_path_to(&m.ident().await?.path)
+                        .context("failed to compute relative path for server NFT JSON")
+                })
+                .try_join()
+                .await?;
 
         // A few hardcoded files (not recursive)
         server_output_assets.push("./package.json".into());
@@ -268,18 +274,6 @@ impl ServerNftJsonAsset {
                 )
                 .collect(),
         ))
-    }
-
-    #[turbo_tasks::function]
-    async fn module_graph(self: Vc<Self>) -> Result<Vc<ModuleGraph>> {
-        let entries = self.entries().owned().await?;
-
-        let single_graph = SingleModuleGraph::new_with_traced_entries(
-            ResolvedVc::cell(vec![ChunkGroupEntry::Entry(entries)]),
-            true,
-            false,
-        );
-        Ok(ModuleGraph::from_graphs(vec![single_graph], None).connect())
     }
 
     #[turbo_tasks::function]
