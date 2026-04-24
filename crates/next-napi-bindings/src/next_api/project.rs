@@ -1713,12 +1713,13 @@ async fn output_assets_operation(
     }
 
     let whole_app_module_graphs = project.whole_app_module_graphs();
+    // This makes the trace file nicer to look at
+    whole_app_module_graphs.as_side_effect().await?;
+
     let nft = next_server_nft_assets(project).await?;
     let routes_hashes_manifest = routes_hashes_manifest_asset_if_enabled(project).await?;
     let immutable_hashes_manifest_asset =
         immutable_hashes_manifest_asset_if_enabled(project).await?;
-
-    whole_app_module_graphs.as_side_effect().await?;
 
     Ok(Vc::cell(
         output_assets

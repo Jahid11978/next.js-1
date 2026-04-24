@@ -266,6 +266,7 @@ impl Asset for NftJsonAsset {
                 *this.module_graph,
                 Vc::cell(this.entry_modules.clone()),
                 exclude_glob,
+                false,
             )
             .await?;
 
@@ -414,10 +415,11 @@ impl Asset for NftJsonAsset {
 }
 
 #[turbo_tasks::function]
-async fn traced_modules_for_entries(
+pub async fn traced_modules_for_entries(
     module_graph: Vc<ModuleGraph>,
     entry_modules: Vc<Modules>,
     exclude_glob: Option<Vc<Glob>>,
+    entries_are_traced: bool,
 ) -> Result<Vc<Modules>> {
     let exclude_glob = if let Some(exclude_glob) = exclude_glob {
         Some(exclude_glob.await?)
@@ -438,6 +440,10 @@ async fn traced_modules_for_entries(
         &mut (),
         |parent, target, _| {
             let Some((parent, ref_data)) = parent else {
+                if entries_are_traced {
+                    is_traced.insert(target);
+                    result.push(target);
+                }
                 return Ok(GraphTraversalAction::Continue);
             };
 
