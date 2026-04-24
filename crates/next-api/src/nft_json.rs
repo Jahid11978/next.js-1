@@ -160,7 +160,6 @@ impl Asset for NftJsonAsset {
             path = display(self.path().to_string().await?)
         );
         async move {
-            let mut result: BTreeSet<RcStr> = BTreeSet::new();
             let project_path = this.project.project_path().owned().await?;
 
             let output_root_ref = this.project.output_fs().root().await?;
@@ -272,90 +271,92 @@ impl Asset for NftJsonAsset {
 
             let module_paths = module_paths_for_graph(*this.module_graph);
 
-            for referenced in all_assets
+            let mut result: Vec<RcStr> = all_assets
                 .iter()
                 .filter(|a| **a != chunk)
                 .copied()
                 .map(AssetOrModule::Asset)
                 .chain(all_modules.iter().copied().map(AssetOrModule::Module))
-            {
-                let referenced_chunk_path = match referenced {
-                    AssetOrModule::Asset(v) => &*v.path().await?,
-                    AssetOrModule::Module(v) => &*module_paths
-                        .get(&v)
-                        .await?
-                        .context("missing path for module")?,
-                };
-                if let AssetOrModule::Module(referenced) = referenced
-                    && referenced_chunk_path == &*next_config_path
-                {
-                    // If next.config.js was traced, assume that the whole project was traced
-                    // (unintentionally). Print a message in this case to avoid deploying
-                    // unnecessary files.
-                    ForbiddenTracedFileIssue::new(*referenced)
-                        .to_resolved()
-                        .await?
-                        .emit();
-                }
-
-                if referenced_chunk_path.has_extension(".map") {
-                    continue;
-                }
-
-                #[cfg(debug_assertions)]
-                {
-                    // Verify that we there are no entries where a file is created inside of a
-                    // symlink, as this can result in invalid ZIP files and
-                    // deployment failures. For example
-                    // node_modules/.pnpm/node_modules/@libsql/client/package.json
-                    // where
-                    // node_modules/.pnpm/node_modules/@libsql/client is a symlink
-                    let mut current_path = referenced_chunk_path.parent();
-                    loop {
-                        use turbo_tasks_fs::FileSystemEntryType;
-
-                        if current_path.is_root() {
-                            break;
-                        }
-
-                        if matches!(
-                            &*current_path.get_type().await?,
-                            FileSystemEntryType::Symlink
-                        ) {
-                            turbo_tasks::turbobail!(
-                                "Encountered file inside of symlink in NFT list: {current_path} \
-                                 is a symlink, but {referenced_chunk_path} was created inside of \
-                                 it"
-                            );
-                        }
-
-                        current_path = current_path.parent();
+                .map(async |referenced| {
+                    let referenced_chunk_path = match referenced {
+                        AssetOrModule::Asset(v) => &*v.path().await?,
+                        AssetOrModule::Module(v) => &*module_paths
+                            .get(&v)
+                            .await?
+                            .context("missing path for module")?,
+                    };
+                    if let AssetOrModule::Module(referenced) = referenced
+                        && referenced_chunk_path == &*next_config_path
+                    {
+                        // If next.config.js was traced, assume that the whole project was traced
+                        // (unintentionally). Print a message in this case to avoid deploying
+                        // unnecessary files.
+                        ForbiddenTracedFileIssue::new(*referenced)
+                            .to_resolved()
+                            .await?
+                            .emit();
                     }
-                }
 
-                let specifier = match get_output_specifier(
-                    referenced_chunk_path,
-                    &ident_folder,
-                    &ident_folder_in_project_fs,
-                    &output_root_ref,
-                    &project_root_ref,
-                ) {
-                    Ok(specifier) => specifier,
-                    Err(err) => {
-                        // ast-grep-ignore: no-context-turbofmt
-                        return Err(err.context(
-                            turbofmt!(
-                                "NftJsonAsset: cannot handle filepath '{referenced_chunk_path}', \
-                                 it is not under the output_root: '{output_root_ref}' or the \
-                                 project_root: '{project_root_ref}'",
-                            )
-                            .await?,
-                        ));
+                    if referenced_chunk_path.has_extension(".map") {
+                        return Ok(None);
                     }
-                };
 
-                result.insert(specifier);
-            }
+                    #[cfg(debug_assertions)]
+                    {
+                        // Verify that we there are no entries where a file is created inside of a
+                        // symlink, as this can result in invalid ZIP files and
+                        // deployment failures. For example
+                        // node_modules/.pnpm/node_modules/@libsql/client/package.json
+                        // where
+                        // node_modules/.pnpm/node_modules/@libsql/client is a symlink
+                        let mut current_path = referenced_chunk_path.parent();
+                        loop {
+                            use turbo_tasks_fs::FileSystemEntryType;
+
+                            if current_path.is_root() {
+                                break;
+                            }
+
+                            if matches!(
+                                &*current_path.get_type().await?,
+                                FileSystemEntryType::Symlink
+                            ) {
+                                turbo_tasks::turbobail!(
+                                    "Encountered file inside of symlink in NFT list: \
+                                     {current_path} is a symlink, but {referenced_chunk_path} was \
+                                     created inside of it"
+                                );
+                            }
+
+                            current_path = current_path.parent();
+                        }
+                    }
+
+                    let specifier = match get_output_specifier(
+                        referenced_chunk_path,
+                        &ident_folder,
+                        &ident_folder_in_project_fs,
+                        &output_root_ref,
+                        &project_root_ref,
+                    ) {
+                        Ok(specifier) => specifier,
+                        Err(err) => {
+                            // ast-grep-ignore: no-context-turbofmt
+                            return Err(err.context(
+                                turbofmt!(
+                                    "NftJsonAsset: cannot handle filepath \
+                                     '{referenced_chunk_path}', it is not under the output_root: \
+                                     '{output_root_ref}' or the project_root: '{project_root_ref}'",
+                                )
+                                .await?,
+                            ));
+                        }
+                    };
+
+                    Ok(Some(specifier))
+                })
+                .try_flat_join()
+                .await?;
 
             // Apply outputFileTracingIncludes and outputFileTracingExcludes
             // Extract route from chunk path for pattern matching
@@ -404,6 +405,9 @@ impl Asset for NftJsonAsset {
 
                 result.extend(includes.into_iter().flatten());
             }
+
+            result.sort_unstable();
+            result.dedup();
 
             let json = json!({
               "version": 1,
