@@ -18,7 +18,6 @@ workspace = true
 
 [dependencies]
 turbopack = { workspace = true }
-turbopack-node = { workspace = true, features = ["process_pool"] }
 
 [dev-dependencies]
 anyhow = { workspace = true }

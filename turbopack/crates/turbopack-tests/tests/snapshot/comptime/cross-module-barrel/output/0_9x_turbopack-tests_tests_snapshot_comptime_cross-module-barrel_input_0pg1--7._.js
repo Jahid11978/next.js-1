@@ -16,7 +16,6 @@ function foo() {
 __turbopack_context__.s([]);
 var __TURBOPACK__imported__module__$5b$project$5d2f$turbopack$2f$crates$2f$turbopack$2d$tests$2f$tests$2f$snapshot$2f$comptime$2f$cross$2d$module$2d$barrel$2f$input$2f$library$2f$runtime$2e$js__$5b$test$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/turbopack/crates/turbopack-tests/tests/snapshot/comptime/cross-module-barrel/input/library/runtime.js [test] (ecmascript)");
 ;
-// TODO ideally this would be inlined (reexport resolving with constants)
 if ("TURBOPACK compile-time truthy", 1) {
     console.log('x');
 } else //TURBOPACK unreachable

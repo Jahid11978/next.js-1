@@ -1,6 +1,5 @@
 import { SOME_VALUE, BARREL_VALUE, foo } from './library'
 
-// TODO ideally this would be inlined (reexport resolving with constants)
 if (SOME_VALUE === 'x') {
   console.log('x')
 } else {
