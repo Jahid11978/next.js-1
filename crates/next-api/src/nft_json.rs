@@ -270,6 +270,8 @@ impl Asset for NftJsonAsset {
             )
             .await?;
 
+            let module_paths = module_paths_for_graph(*this.module_graph);
+
             for referenced in all_assets
                 .iter()
                 .filter(|a| **a != chunk)
@@ -278,11 +280,14 @@ impl Asset for NftJsonAsset {
                 .chain(all_modules.iter().copied().map(AssetOrModule::Module))
             {
                 let referenced_chunk_path = match referenced {
-                    AssetOrModule::Asset(v) => v.path().await?,
-                    AssetOrModule::Module(v) => v.ident().path().await?,
+                    AssetOrModule::Asset(v) => &*v.path().await?,
+                    AssetOrModule::Module(v) => &*module_paths
+                        .get(&v)
+                        .await?
+                        .context("missing path for module")?,
                 };
                 if let AssetOrModule::Module(referenced) = referenced
-                    && referenced_chunk_path == next_config_path
+                    && referenced_chunk_path == &*next_config_path
                 {
                     // If next.config.js was traced, assume that the whole project was traced
                     // (unintentionally). Print a message in this case to avoid deploying
@@ -329,7 +334,7 @@ impl Asset for NftJsonAsset {
                 }
 
                 let specifier = match get_output_specifier(
-                    &referenced_chunk_path,
+                    referenced_chunk_path,
                     &ident_folder,
                     &ident_folder_in_project_fs,
                     &output_root_ref,
@@ -473,7 +478,7 @@ pub async fn traced_modules_for_entries(
     Ok(Vc::cell(result))
 }
 
-#[turbo_tasks::value(transparent)]
+#[turbo_tasks::value(transparent, cell = "keyed")]
 struct ModulePaths(FxHashMap<ResolvedVc<Box<dyn Module>>, ReadRef<FileSystemPath>>);
 /// This caches the paths for all modules in the graph so that we don't have to do it once per page.
 #[turbo_tasks::function]
