@@ -461,6 +461,7 @@ async fn traced_modules_for_entries(
             Ok(GraphTraversalAction::Continue)
         },
         |_, _, _| Ok(()),
+        true,
     )?;
 
     Ok(Vc::cell(result))

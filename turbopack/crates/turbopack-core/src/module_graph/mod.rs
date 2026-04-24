@@ -804,7 +804,7 @@ impl ModuleGraph {
 
         let entry = graph_ref.get_entry(module)?;
         let referenced_modules = graph_ref
-            .iter_graphs_neighbors_rev(entry, Direction::Outgoing)
+            .iter_graphs_neighbors_rev(entry, Direction::Outgoing, false)
             .filter(|(edge_idx, _)| {
                 let ty = graph_ref.get_edge(*edge_idx).unwrap();
                 ty.chunking_type.is_inherit_async()
@@ -883,6 +883,15 @@ impl Deref for ModuleGraphLayer {
 #[turbo_tasks::value(transparent)]
 pub struct ModuleGraphLayers(Vec<OperationVc<ModuleGraphLayer>>);
 
+/// This struct provides traversal functionality for the module graph.
+///
+/// Some edges might be ignored during traversal: unused references listed in binding_usage are
+/// always skipped, and references with ChunkingType::Traced are skipped by default (can be
+/// overridden in some functions via the include_traced parameter).
+///
+/// The API across the functions is pretty consistent, apart from:
+/// - traverse_edges_fixed_point_with_priority additionally provides the GraphEdgeIndex
+/// - traverse_edges_dfs is the only function with include_traced
 #[derive(TraceRawVcs, ValueDebugFormat, NonLocalValue)]
 pub struct ModuleGraphSnapshot {
     pub graphs: Vec<ReadRef<SingleModuleGraph>>,
@@ -972,6 +981,7 @@ impl ModuleGraphSnapshot {
         &'a self,
         node: GraphNodeIndex,
         direction: Direction,
+        include_traced: bool,
     ) -> impl Iterator<Item = (GraphEdgeIndex, GraphNodeIndex)> + 'a {
         let graph = &*self.get_graph(node.graph_idx).graph;
 
@@ -992,6 +1002,10 @@ impl ModuleGraphSnapshot {
                     .is_some_and(|binding_usage| binding_usage.is_reference_unused_edge(&edge_idx))
                 {
                     // Don't just return None here, that would end the iterator
+                    continue;
+                }
+
+                if !include_traced && self.get_edge(edge_idx).unwrap().chunking_type.is_traced() {
                     continue;
                 }
 
@@ -1061,7 +1075,7 @@ impl ModuleGraphSnapshot {
                             .target_idx(Direction::Outgoing)
                             .unwrap_or(current);
                         stack.extend(
-                            self.iter_graphs_neighbors_rev(current, Direction::Outgoing)
+                            self.iter_graphs_neighbors_rev(current, Direction::Outgoing, false)
                                 .map(|(_, child)| (Pass::ExpandAndVisit, child)),
                         );
                     }
@@ -1103,7 +1117,8 @@ impl ModuleGraphSnapshot {
         while let Some(node) = queue.pop_front() {
             if visited.insert(node) {
                 let node_weight = self.get_node(node)?;
-                for (edge, succ) in self.iter_graphs_neighbors_rev(node, Direction::Outgoing) {
+                for (edge, succ) in self.iter_graphs_neighbors_rev(node, Direction::Outgoing, false)
+                {
                     let succ_weight = self.get_node(succ)?;
                     let action = visitor(
                         Some((node_weight.module(), self.get_edge(edge)?)),
@@ -1150,6 +1165,7 @@ impl ModuleGraphSnapshot {
                 Ok(GraphTraversalAction::Continue)
             },
             |_, _, _| Ok(()),
+            false,
         )
     }
 
@@ -1185,6 +1201,7 @@ impl ModuleGraphSnapshot {
             ResolvedVc<Box<dyn Module>>,
             &mut S,
         ) -> Result<()>,
+        include_traced: bool,
     ) -> Result<()> {
         self.traverse_edges_dfs_impl::<S>(
             entries,
@@ -1192,6 +1209,7 @@ impl ModuleGraphSnapshot {
             visit_preorder,
             visit_postorder,
             Direction::Outgoing,
+            include_traced,
         )
     }
 
@@ -1232,6 +1250,7 @@ impl ModuleGraphSnapshot {
             visit_preorder,
             visit_postorder,
             Direction::Incoming,
+            false,
         )
     }
 
@@ -1250,6 +1269,7 @@ impl ModuleGraphSnapshot {
             &mut S,
         ) -> Result<()>,
         direction: Direction,
+        include_traced: bool,
     ) -> Result<()> {
         if direction == Direction::Incoming {
             debug_assert!(
@@ -1298,9 +1318,12 @@ impl ModuleGraphSnapshot {
                         && self.should_visit_node(current_node, direction)
                     {
                         let current = current_node.target_idx(direction).unwrap_or(current);
-                        stack.extend(self.iter_graphs_neighbors_rev(current, direction).map(
-                            |(edge, child)| (Pass::ExpandAndVisit, Some((current, edge)), child),
-                        ));
+                        stack.extend(
+                            self.iter_graphs_neighbors_rev(current, direction, include_traced)
+                                .map(|(edge, child)| {
+                                    (Pass::ExpandAndVisit, Some((current, edge)), child)
+                                }),
+                        );
                     }
                 }
             }
@@ -1421,7 +1444,7 @@ impl ModuleGraphSnapshot {
 
             visit_count += 1;
 
-            for (edge, succ) in self.iter_graphs_neighbors_rev(node, Direction::Outgoing) {
+            for (edge, succ) in self.iter_graphs_neighbors_rev(node, Direction::Outgoing, false) {
                 let succ_weight = self.get_node(succ)?;
 
                 let action = visit(
@@ -1501,7 +1524,7 @@ impl<'a> Iterator for ModuleGraphSnapshotNodeIterator<'a> {
                         .unwrap_or(node_idx);
                     self.visit_queue.extend(
                         self.graph
-                            .iter_graphs_neighbors_rev(node, Direction::Outgoing)
+                            .iter_graphs_neighbors_rev(node, Direction::Outgoing, false)
                             .map(|(_, succ)| succ)
                             .filter(|succ| !self.visited.contains(succ)),
                     );
@@ -1865,6 +1888,7 @@ pub mod tests {
                         ));
                         Ok(())
                     },
+                    false,
                 )?;
                 assert_eq!(
                     vec![
@@ -1925,6 +1949,7 @@ pub mod tests {
                         ));
                         Ok(())
                     },
+                    false,
                 )?;
                 assert_eq!(
                     vec![
@@ -2198,6 +2223,7 @@ pub mod tests {
                         Ok(GraphTraversalAction::Continue)
                     },
                     |_, _, _| Ok(()),
+                    false,
                 )?;
                 let forward = visited_forward
                     .iter()

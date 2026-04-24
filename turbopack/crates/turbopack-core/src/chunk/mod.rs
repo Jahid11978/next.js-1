@@ -391,6 +391,10 @@ impl ChunkingType {
         matches!(self, ChunkingType::Parallel { .. })
     }
 
+    pub fn is_traced(&self) -> bool {
+        matches!(self, ChunkingType::Traced)
+    }
+
     pub fn is_merged(&self) -> bool {
         matches!(
             self,
