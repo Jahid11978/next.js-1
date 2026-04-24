@@ -282,7 +282,7 @@ impl SingleModuleGraph {
         let root_nodes = entries
             .iter()
             .flat_map(|e| e.entries())
-            .map(|e| SingleModuleGraphBuilderNode::new_module(emit_spans, e))
+            .map(|e| SingleModuleGraphBuilderNode::new_module(emit_spans, e, false))
             .try_join()
             .await?;
 
@@ -314,9 +314,11 @@ impl SingleModuleGraph {
             let _span = tracing::info_span!("build module graph").entered();
             for (parent, current) in children_nodes_iter.into_breadth_first_edges() {
                 let (module, graph_node, count) = match current {
-                    SingleModuleGraphBuilderNode::Module { module, ident: _ } => {
-                        (module, SingleModuleGraphNode::Module(module), 1)
-                    }
+                    SingleModuleGraphBuilderNode::Module {
+                        module,
+                        is_traced: _,
+                        ident: _,
+                    } => (module, SingleModuleGraphNode::Module(module), 1),
                     SingleModuleGraphBuilderNode::VisitedModule { module, idx } => (
                         module,
                         SingleModuleGraphNode::VisitedModule { idx, module },
@@ -1658,8 +1660,10 @@ enum SingleModuleGraphBuilderNode {
     /// A regular module
     Module {
         module: ResolvedVc<Box<dyn Module>>,
-        // module.ident().to_string(), eagerly computed for tracing
+        /// module.ident().to_string(), eagerly computed for tracing, otherwise None
         ident: Option<ReadRef<RcStr>>,
+        /// whether this module is a tracing context
+        is_traced: bool,
     },
     /// A reference to a module that is already listed in visited_modules
     VisitedModule {
@@ -1669,7 +1673,11 @@ enum SingleModuleGraphBuilderNode {
 }
 
 impl SingleModuleGraphBuilderNode {
-    async fn new_module(emit_spans: bool, module: ResolvedVc<Box<dyn Module>>) -> Result<Self> {
+    async fn new_module(
+        emit_spans: bool,
+        module: ResolvedVc<Box<dyn Module>>,
+        is_traced: bool,
+    ) -> Result<Self> {
         Ok(Self::Module {
             module,
             ident: if emit_spans {
@@ -1678,6 +1686,7 @@ impl SingleModuleGraphBuilderNode {
             } else {
                 None
             },
+            is_traced,
         })
     }
     fn new_visited_module(module: ResolvedVc<Box<dyn Module>>, idx: GraphNodeIndex) -> Self {
@@ -1712,14 +1721,12 @@ impl Visit<SingleModuleGraphBuilderNode, RefData> for SingleModuleGraphBuilder<'
         }
     }
 
-    fn edges(
-        &mut self,
-        // The `skip_duplicates_with_key()` above ensures only a single `edges()` call per module
-        // (and not per `(module, export)` pair), so the export must not be read here!
-        node: &SingleModuleGraphBuilderNode,
-    ) -> Self::EdgesFuture {
+    fn edges(&mut self, node: &SingleModuleGraphBuilderNode) -> Self::EdgesFuture {
         // Destructure beforehand to not have to clone the whole node when entering the async block
-        let &SingleModuleGraphBuilderNode::Module { module, .. } = node else {
+        let &SingleModuleGraphBuilderNode::Module {
+            module, is_traced, ..
+        } = node
+        else {
             // These are always skipped in `visit()`
             unreachable!()
         };
@@ -1728,15 +1735,7 @@ impl Visit<SingleModuleGraphBuilderNode, RefData> for SingleModuleGraphBuilder<'
         let include_traced = self.include_traced;
         let include_binding_usage = self.include_binding_usage;
         async move {
-            // WIP this is ugly
-            let is_tracing_context = module
-                .ident()
-                .await?
-                .layer
-                .as_ref()
-                .is_some_and(|l| l.name() == "externals-tracing");
-
-            let refs_cell = if !is_tracing_context {
+            let refs_cell = if !is_traced {
                 primary_chunkable_referenced_modules(*module, include_traced, include_binding_usage)
             } else {
                 // Currently we don't care about the binding usage of traced references
@@ -1764,7 +1763,12 @@ impl Visit<SingleModuleGraphBuilderNode, RefData> for SingleModuleGraphBuilder<'
                     let to = if let Some(idx) = visited_modules.get(&target) {
                         SingleModuleGraphBuilderNode::new_visited_module(target, *idx)
                     } else {
-                        SingleModuleGraphBuilderNode::new_module(emit_spans, target).await?
+                        SingleModuleGraphBuilderNode::new_module(
+                            emit_spans,
+                            target,
+                            is_traced || ty == ChunkingType::Traced,
+                        )
+                        .await?
                     };
                     Ok((
                         to,
