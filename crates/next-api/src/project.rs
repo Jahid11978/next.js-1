@@ -35,8 +35,8 @@ use tracing::{Instrument, field::Empty};
 use turbo_rcstr::{RcStr, rcstr};
 use turbo_tasks::{
     Completion, Completions, FxIndexMap, NonLocalValue, OperationValue, OperationVc, ReadRef,
-    ResolvedVc, State, TaskInput, TransientInstance, TryFlatJoinIterExt, TryJoinIterExt,
-    ValueToString, Vc, debug::ValueDebugFormat, fxindexmap, trace::TraceRawVcs,
+    ResolvedVc, State, TaskInput, TransientInstance, TryFlatJoinIterExt, TryJoinIterExt, Vc,
+    debug::ValueDebugFormat, fxindexmap, trace::TraceRawVcs,
 };
 use turbo_tasks_env::{EnvMap, ProcessEnv};
 use turbo_tasks_fs::{
@@ -1808,11 +1808,6 @@ impl Project {
                 let path = &ident.path.path;
                 for &(feature, suffix) in FEATURE_MODULE_PATH_SUFFIXES {
                     if path.ends_with(suffix) {
-                        eprintln!(
-                            "Found feature {feature}, path: {path} using suffix: {suffix} from \
-                             module: {}",
-                            node.ident().to_string().await?
-                        );
                         return Ok(Some((node, feature)));
                     }
                 }
@@ -1854,8 +1849,7 @@ impl Project {
                     ident.query.clone(),
                     ident.fragment.clone(),
                 );
-                eprintln!("Found feature usage {feature} from {key:?}");
-                Ok::<_, anyhow::Error>((feature, key))
+                Ok((feature, key))
             })
             .try_join()
             .await?;
