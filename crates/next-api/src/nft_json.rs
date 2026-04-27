@@ -454,20 +454,19 @@ pub async fn traced_modules_for_entries(
                 return Ok(GraphTraversalAction::Continue);
             };
 
-            if let Some(exclude_glob) = &exclude_glob
-                && exclude_glob.matches(
-                    &module_paths
-                        .as_ref()
-                        .unwrap()
-                        .get(&target)
-                        .context("missing path for module")?
-                        .path,
-                )
-            {
-                return Ok(GraphTraversalAction::Skip);
-            }
-
             if ref_data.chunking_type == ChunkingType::Traced || traced_modules.contains(&parent) {
+                if let Some(exclude_glob) = &exclude_glob
+                    && exclude_glob.matches(
+                        &module_paths
+                            .as_ref()
+                            .unwrap()
+                            .get(&target)
+                            .context("missing path for module")?
+                            .path,
+                    )
+                {
+                    return Ok(GraphTraversalAction::Skip);
+                }
                 traced_modules.insert(target);
             };
             Ok(GraphTraversalAction::Continue)
