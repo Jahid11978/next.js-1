@@ -2,12 +2,13 @@ use std::collections::{BTreeSet, VecDeque};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use serde_json::json;
 use tracing::{Instrument, Level, Span};
 use turbo_rcstr::{RcStr, rcstr};
 use turbo_tasks::{
-    FxIndexMap, ReadRef, ResolvedVc, TryFlatJoinIterExt, TryJoinIterExt, ValueToString, Vc,
+    FxIndexMap, FxIndexSet, ReadRef, ResolvedVc, TryFlatJoinIterExt, TryJoinIterExt, ValueToString,
+    Vc,
     graph::{AdjacencyMap, GraphTraversal, Visit},
     turbofmt,
 };
@@ -441,17 +442,14 @@ pub async fn traced_modules_for_entries(
         None
     };
 
-    let mut result = vec![];
-    let mut is_traced = FxHashSet::default();
-
+    let mut traced_modules = FxIndexSet::default();
     module_graph.await?.traverse_edges_dfs(
         entry_modules.await?.iter().copied(),
         &mut (),
         |parent, target, _| {
             let Some((parent, ref_data)) = parent else {
                 if entries_are_traced {
-                    is_traced.insert(target);
-                    result.push(target);
+                    traced_modules.insert(target);
                 }
                 return Ok(GraphTraversalAction::Continue);
             };
@@ -469,9 +467,8 @@ pub async fn traced_modules_for_entries(
                 return Ok(GraphTraversalAction::Skip);
             }
 
-            if ref_data.chunking_type == ChunkingType::Traced || is_traced.contains(&parent) {
-                is_traced.insert(target);
-                result.push(target);
+            if ref_data.chunking_type == ChunkingType::Traced || traced_modules.contains(&parent) {
+                traced_modules.insert(target);
             };
             Ok(GraphTraversalAction::Continue)
         },
@@ -479,7 +476,7 @@ pub async fn traced_modules_for_entries(
         true,
     )?;
 
-    Ok(Vc::cell(result))
+    Ok(Vc::cell(traced_modules.into_iter().collect()))
 }
 
 #[turbo_tasks::value(transparent, cell = "keyed")]
