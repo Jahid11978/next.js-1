@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, VecDeque};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::json;
 use tracing::{Instrument, Level, Span};
 use turbo_rcstr::{RcStr, rcstr};
@@ -270,7 +270,7 @@ impl Asset for NftJsonAsset {
             )
             .await?;
 
-            let module_paths = module_paths_for_graph(*this.module_graph);
+            let module_paths = module_paths_for_graph(*this.module_graph, false);
 
             let mut result: Vec<RcStr> = all_assets
                 .iter()
@@ -437,7 +437,7 @@ pub async fn traced_modules_for_entries(
         None
     };
     let module_paths = if exclude_glob.is_some() {
-        Some(module_paths_for_graph(module_graph).await?)
+        Some(module_paths_for_graph(module_graph, entries_are_traced).await?)
     } else {
         None
     };
@@ -483,11 +483,39 @@ pub async fn traced_modules_for_entries(
 struct ModulePaths(FxHashMap<ResolvedVc<Box<dyn Module>>, ReadRef<FileSystemPath>>);
 /// This caches the paths for all modules in the graph so that we don't have to do it once per page.
 #[turbo_tasks::function]
-async fn module_paths_for_graph(module_graph: Vc<ModuleGraph>) -> Result<Vc<ModulePaths>> {
+async fn module_paths_for_graph(
+    module_graph: Vc<ModuleGraph>,
+    entries_are_traced: bool,
+) -> Result<Vc<ModulePaths>> {
+    // This function is very similar to traced_modules_for_entries, but doesn't apply the glob and
+    // is executed only once for the whole graph.
+    let module_graph = module_graph.await?;
+    let entries = module_graph.graphs.iter().flat_map(|g| g.entry_modules());
+
+    let mut traced_modules = FxHashSet::default();
+    module_graph.traverse_edges_dfs(
+        entries,
+        &mut (),
+        |parent, target, _| {
+            let Some((parent, ref_data)) = parent else {
+                if entries_are_traced {
+                    traced_modules.insert(target);
+                }
+                return Ok(GraphTraversalAction::Continue);
+            };
+
+            if ref_data.chunking_type == ChunkingType::Traced || traced_modules.contains(&parent) {
+                traced_modules.insert(target);
+            };
+            Ok(GraphTraversalAction::Continue)
+        },
+        |_, _, _| Ok(()),
+        true,
+    )?;
+
     Ok(Vc::cell(
-        module_graph
-            .await?
-            .iter_nodes()
+        traced_modules
+            .into_iter()
             .map(async |module| Ok((module, module.ident().path().await?)))
             .try_join()
             .await?
