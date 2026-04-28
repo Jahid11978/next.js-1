@@ -263,6 +263,24 @@ function ensureDynamicExports(
         }
         return keys
       },
+      // Materialize the dynamic re-export keys onto the target before it
+      // becomes non-extensible. Without this, `Object.seal` (called from
+      // `esm`) trips the proxy `ownKeys` invariant: once the target is
+      // non-extensible, the trap must return exactly the target's own
+      // keys, but the trap above synthesizes extras from reexportedObjects.
+      preventExtensions(target) {
+        for (const obj of reexportedObjects!) {
+          for (const key of Reflect.ownKeys(obj)) {
+            if (key === 'default' || Reflect.has(target, key)) continue
+            Object.defineProperty(target, key, {
+              enumerable: true,
+              configurable: true,
+              get: () => (obj as any)[key],
+            })
+          }
+        }
+        return Reflect.preventExtensions(target)
+      },
     })
   }
   return reexportedObjects
