@@ -1876,8 +1876,8 @@ pub mod tests {
         asset::{Asset, AssetContent},
         ident::AssetIdent,
         module::{Module, ModuleSideEffects},
-        reference::{ModuleReference, ModuleReferences, SingleChunkableModuleReference},
-        resolve::ExportUsage,
+        reference::{ModuleReference, ModuleReferences},
+        resolve::ModuleResolveResult,
     };
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2185,25 +2185,10 @@ pub mod tests {
 
                 // a simple linear graph a -> b ->c
                 // but b->c is in a parent graph and a is in the child
-                let graph = {
-                    let mut deps = FxHashMap::default();
-
-                    deps.insert(rcstr!("a.js"), vec![rcstr!("b.js"), rcstr!("d.js")]);
-                    deps.insert(rcstr!("b.js"), vec![rcstr!("c.js")]);
-                    deps
-                };
-                let repo = TestRepo {
-                    repo: graph
-                        .iter()
-                        .map(|(k, v)| {
-                            (
-                                root.join(k).unwrap(),
-                                v.iter().map(|f| root.join(f).unwrap()).collect(),
-                            )
-                        })
-                        .collect(),
-                }
-                .cell();
+                let repo = TestRepo::new(
+                    &root,
+                    [("a.js", vec!["b.js", "d.js"]), ("b.js", vec!["c.js"])],
+                );
                 let make_module = |name| {
                     Vc::upcast::<Box<dyn Module>>(MockModule::new(root.join(name).unwrap(), repo))
                         .to_resolved()
@@ -2359,28 +2344,18 @@ pub mod tests {
 
                 // a simple linear graph a -> b -> c -> x -> y -> z
                 // but x -> y -> z is in a parent graph
-                let graph = {
-                    let mut deps = FxHashMap::default();
 
-                    deps.insert(rcstr!("a.js"), vec![rcstr!("b.js")]);
-                    deps.insert(rcstr!("b.js"), vec![rcstr!("c.js")]);
-                    deps.insert(rcstr!("c.js"), vec![rcstr!("x.js")]);
-                    deps.insert(rcstr!("x.js"), vec![rcstr!("y.js")]);
-                    deps.insert(rcstr!("y.js"), vec![rcstr!("z.js")]);
-                    deps
-                };
-                let repo = TestRepo {
-                    repo: graph
-                        .iter()
-                        .map(|(k, v)| {
-                            (
-                                root.join(k).unwrap(),
-                                v.iter().map(|f| root.join(f).unwrap()).collect(),
-                            )
-                        })
-                        .collect(),
-                }
-                .cell();
+                let repo = TestRepo::new_with_chunking_types(
+                    &root,
+                    [
+                        ("a.js", vec!["b.js"]),
+                        ("b.js", vec!["c.js"]),
+                        ("c.js", vec!["x.js"]),
+                        ("x.js", vec!["y.js", "traced.js"]),
+                        ("y.js", vec!["z.js"]),
+                    ],
+                    [("x.js", "traced.js", ChunkingType::Traced)],
+                );
                 let make_module = |name| {
                     Vc::upcast::<Box<dyn Module>>(MockModule::new(root.join(name).unwrap(), repo))
                         .to_resolved()
@@ -2390,7 +2365,7 @@ pub mod tests {
 
                 let parent_graph = SingleModuleGraph::new_with_entries(
                     ResolvedVc::cell(vec![ChunkGroupEntry::Entry(vec![x_module])]),
-                    false,
+                    true,
                     false,
                 );
 
@@ -2400,7 +2375,7 @@ pub mod tests {
                         SingleModuleGraph::new_with_entries_visited(
                             ResolvedVc::cell(vec![ChunkGroupEntry::Entry(vec![a_module])]),
                             VisitedModules::from_graph(parent_graph),
-                            false,
+                            true,
                             false,
                         ),
                     ],
@@ -2543,7 +2518,54 @@ pub mod tests {
     #[turbo_tasks::value(shared)]
     struct TestRepo {
         repo: FxHashMap<FileSystemPath, Vec<FileSystemPath>>,
+        chunking_types: FxHashMap<(FileSystemPath, FileSystemPath), ChunkingType>,
     }
+
+    impl TestRepo {
+        fn new(
+            root: &FileSystemPath,
+            dependencies: impl IntoIterator<Item = (impl AsRef<str>, Vec<impl AsRef<str>>)>,
+        ) -> Vc<Self> {
+            Self::new_with_chunking_types(
+                root,
+                dependencies,
+                std::iter::empty::<(RcStr, RcStr, ChunkingType)>(),
+            )
+        }
+
+        fn new_with_chunking_types(
+            root: &FileSystemPath,
+            dependencies: impl IntoIterator<Item = (impl AsRef<str>, Vec<impl AsRef<str>>)>,
+            chunking_types: impl IntoIterator<Item = (impl AsRef<str>, impl AsRef<str>, ChunkingType)>,
+        ) -> Vc<Self> {
+            let chunking_types = chunking_types
+                .into_iter()
+                .map(|(from, to, ty)| {
+                    (
+                        (
+                            root.join(from.as_ref()).unwrap(),
+                            root.join(to.as_ref()).unwrap(),
+                        ),
+                        ty,
+                    )
+                })
+                .collect::<FxHashMap<_, _>>();
+            Self {
+                repo: dependencies
+                    .into_iter()
+                    .map(|(k, v)| {
+                        (
+                            root.join(k.as_ref()).unwrap(),
+                            v.iter().map(|f| root.join(f.as_ref()).unwrap()).collect(),
+                        )
+                    })
+                    .collect(),
+                chunking_types,
+            }
+            .cell()
+        }
+    }
+
     #[turbo_tasks::value]
     struct MockModule {
         path: FileSystemPath,
@@ -2583,15 +2605,22 @@ pub mod tests {
             let references = match repo.repo.get(&self.path) {
                 Some(deps) => {
                     deps.iter()
-                        .map(|p| {
-                            Vc::upcast::<Box<dyn ModuleReference>>(
-                                SingleChunkableModuleReference::new(
-                                    Vc::upcast(MockModule::new(p.clone(), *self.repo)),
-                                    rcstr!("normal-dep"),
-                                    ExportUsage::all(),
+                        .map(async |p| {
+                            Vc::upcast::<Box<dyn ModuleReference>>(MockModuleReference::new(
+                                ResolvedVc::upcast(
+                                    MockModule::new(p.clone(), *self.repo).to_resolved().await?,
                                 ),
-                            )
+                                rcstr!("normal-dep"),
+                                repo.chunking_types
+                                    .get(&(self.path.clone(), p.clone()))
+                                    .cloned()
+                                    .unwrap_or(ChunkingType::Parallel {
+                                        inherit_async: true,
+                                        hoisted: false,
+                                    }),
+                            ))
                             .to_resolved()
+                            .await
                         })
                         .try_join()
                         .await?
@@ -2604,6 +2633,42 @@ pub mod tests {
         #[turbo_tasks::function]
         fn side_effects(self: Vc<Self>) -> Vc<ModuleSideEffects> {
             ModuleSideEffects::SideEffectful.cell()
+        }
+    }
+
+    #[turbo_tasks::value]
+    #[derive(ValueToString)]
+    #[value_to_string(self.description)]
+    struct MockModuleReference {
+        asset: ResolvedVc<Box<dyn Module>>,
+        description: RcStr,
+        chunking_type: ChunkingType,
+    }
+
+    impl MockModuleReference {
+        pub fn new(
+            asset: ResolvedVc<Box<dyn Module>>,
+            description: RcStr,
+            chunking_type: ChunkingType,
+        ) -> Vc<Self> {
+            MockModuleReference {
+                asset,
+                description,
+                chunking_type,
+            }
+            .cell()
+        }
+    }
+
+    #[turbo_tasks::value_impl]
+    impl ModuleReference for MockModuleReference {
+        #[turbo_tasks::function]
+        fn resolve_reference(&self) -> Vc<ModuleResolveResult> {
+            *ModuleResolveResult::module(self.asset)
+        }
+
+        fn chunking_type(&self) -> Option<ChunkingType> {
+            Some(self.chunking_type.clone())
         }
     }
 
@@ -2646,18 +2711,7 @@ pub mod tests {
             let fs = VirtualFileSystem::new_with_name(rcstr!("test"));
             let root = fs.root().await?;
 
-            let repo = TestRepo {
-                repo: graph_entries
-                    .iter()
-                    .map(|(k, v)| {
-                        (
-                            root.join(k).unwrap(),
-                            v.iter().map(|f| root.join(f).unwrap()).collect(),
-                        )
-                    })
-                    .collect(),
-            }
-            .cell();
+            let repo = TestRepo::new(&root, graph_entries);
             let entry_modules = entries
                 .iter()
                 .map(|e| {
