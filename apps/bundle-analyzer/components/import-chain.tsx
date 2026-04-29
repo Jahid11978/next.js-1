@@ -52,6 +52,7 @@ interface DependentInfo {
   sourceIndex: number | undefined
   ident: string
   isAsync: boolean
+  isTraced: boolean
   depth: number
 }
 
@@ -219,6 +220,7 @@ export function ImportChain({
           .map((index: number) => ({
             index,
             async: false,
+            traced: false,
             depth: depthMap.get(index) ?? Infinity,
           })),
         ...modulesData
@@ -226,6 +228,15 @@ export function ImportChain({
           .map((index: number) => ({
             index,
             async: true,
+            traced: false,
+            depth: depthMap.get(index) ?? Infinity,
+          })),
+        ...modulesData
+          .tracedModuleDependents(currentModuleIndex)
+          .map((index: number) => ({
+            index,
+            async: false,
+            traced: true,
             depth: depthMap.get(index) ?? Infinity,
           })),
       ]
@@ -243,7 +254,7 @@ export function ImportChain({
 
       // Build info for each dependent
       const dependentsInfo: DependentInfo[] = validDependents.map(
-        ({ index: moduleIndex, async: isAsync, depth }) => {
+        ({ index: moduleIndex, async: isAsync, traced: isTraced, depth }) => {
           const sourceIndex = getSourceIndexFromModuleIndex(moduleIndex)
           let ident = modulesData.module(moduleIndex)?.ident || ''
           return {
@@ -251,6 +262,7 @@ export function ImportChain({
             sourceIndex,
             ident,
             isAsync,
+            isTraced,
             depth,
           }
         }
@@ -374,6 +386,11 @@ export function ImportChain({
                 {currentItemInfo?.isAsync && (
                   <span className="text-xs text-muted-foreground italic">
                     (async)
+                  </span>
+                )}
+                {currentItemInfo?.isTraced && (
+                  <span className="text-xs text-muted-foreground italic">
+                    (traced)
                   </span>
                 )}
                 {index > 0 ? (

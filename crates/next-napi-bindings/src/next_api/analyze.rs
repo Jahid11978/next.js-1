@@ -120,7 +120,7 @@ async fn get_analyze_data_operation(
     let modules_data = ResolvedVc::upcast(
         ModulesDataOutputAsset::new(
             analyze_output_root.join("modules.data")?,
-            Vc::cell(vec![whole_app_module_graphs.await?.full]),
+            *whole_app_module_graphs.await?.full,
         )
         .to_resolved()
         .await?,

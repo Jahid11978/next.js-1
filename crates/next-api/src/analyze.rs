@@ -2,7 +2,7 @@ use std::{borrow::Cow, io::Write};
 
 use anyhow::Result;
 use byteorder::{BE, WriteBytesExt};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 use turbo_rcstr::RcStr;
 use turbo_tasks::{FxIndexSet, ResolvedVc, TryFlatJoinIterExt, TryJoinIterExt, ValueToString, Vc};
@@ -16,11 +16,10 @@ use turbopack_core::{
     asset::{Asset, AssetContent},
     chunk::ChunkingType,
     module::Module,
+    module_graph::{GraphTraversalAction, ModuleGraph},
     output::{OutputAsset, OutputAssets, OutputAssetsReference},
     reference::all_assets_from_entries,
 };
-
-use crate::route::ModuleGraphs;
 
 pub struct EdgesData {
     pub offsets: Vec<u32>,
@@ -112,9 +111,13 @@ struct ModulesDataHeader {
     /// Edges from modules to modules
     pub async_module_dependents: EdgesDataReference,
     /// Edges from modules to modules
+    pub traced_module_dependents: EdgesDataReference,
+    /// Edges from modules to modules
     pub module_dependencies: EdgesDataReference,
     /// Edges from modules to modules
     pub async_module_dependencies: EdgesDataReference,
+    /// Edges from modules to modules
+    pub traced_module_dependencies: EdgesDataReference,
 }
 
 struct AnalyzeOutputFileBuilder {
@@ -132,8 +135,10 @@ struct AnalyzeModuleBuilder {
     module: AnalyzeModule,
     dependencies: FxIndexSet<u32>,
     async_dependencies: FxIndexSet<u32>,
+    traced_dependencies: FxIndexSet<u32>,
     dependents: FxIndexSet<u32>,
     async_dependents: FxIndexSet<u32>,
+    traced_dependents: FxIndexSet<u32>,
 }
 
 struct AnalyzeDataBuilder {
@@ -297,8 +302,10 @@ impl ModulesDataBuilder {
             module: AnalyzeModule { ident, path },
             dependencies: FxIndexSet::default(),
             async_dependencies: FxIndexSet::default(),
+            traced_dependencies: FxIndexSet::default(),
             dependents: FxIndexSet::default(),
             async_dependents: FxIndexSet::default(),
+            traced_dependents: FxIndexSet::default(),
         });
         (&mut self.modules[index as usize], index)
     }
@@ -314,6 +321,11 @@ impl ModulesDataBuilder {
             .iter()
             .map(|s| s.async_dependencies.iter().copied().collect())
             .collect();
+        let traced_module_dependencies_vecs: Vec<Vec<u32>> = self
+            .modules
+            .iter()
+            .map(|s| s.traced_dependencies.iter().copied().collect())
+            .collect();
         let module_dependents_vecs: Vec<Vec<u32>> = self
             .modules
             .iter()
@@ -324,11 +336,18 @@ impl ModulesDataBuilder {
             .iter()
             .map(|s| s.async_dependents.iter().copied().collect())
             .collect();
+        let traced_module_dependents_vecs: Vec<Vec<u32>> = self
+            .modules
+            .iter()
+            .map(|s| s.traced_dependents.iter().copied().collect())
+            .collect();
 
         let module_dependencies = EdgesData::from_iterator(&module_dependencies_vecs);
         let async_module_dependencies = EdgesData::from_iterator(&async_module_dependencies_vecs);
+        let traced_module_dependencies = EdgesData::from_iterator(&traced_module_dependencies_vecs);
         let module_dependents = EdgesData::from_iterator(&module_dependents_vecs);
         let async_module_dependents = EdgesData::from_iterator(&async_module_dependents_vecs);
+        let traced_module_dependents = EdgesData::from_iterator(&traced_module_dependents_vecs);
 
         let mut binary_section = EdgesDataSectionBuilder::new();
 
@@ -336,8 +355,10 @@ impl ModulesDataBuilder {
             modules: self.modules.into_iter().map(|s| s.module).collect(),
             module_dependents: binary_section.add_edges(&module_dependents),
             async_module_dependents: binary_section.add_edges(&async_module_dependents),
+            traced_module_dependents: binary_section.add_edges(&traced_module_dependents),
             module_dependencies: binary_section.add_edges(&module_dependencies),
             async_module_dependencies: binary_section.add_edges(&async_module_dependencies),
+            traced_module_dependencies: binary_section.add_edges(&traced_module_dependencies),
         };
 
         let header_json = serde_json::to_vec(&header).unwrap();
@@ -431,30 +452,51 @@ pub async fn analyze_output_assets(output_assets: Vc<OutputAssets>) -> Result<Vc
 }
 
 #[turbo_tasks::function]
-pub async fn analyze_module_graphs(module_graphs: Vc<ModuleGraphs>) -> Result<Vc<FileContent>> {
+pub async fn analyze_module_graphs(module_graph: Vc<ModuleGraph>) -> Result<Vc<FileContent>> {
     let mut builder = ModulesDataBuilder::new();
 
     let mut all_modules = FxIndexSet::default();
     let mut all_edges = FxIndexSet::default();
     let mut all_async_edges = FxIndexSet::default();
-    for &module_graph in module_graphs.await? {
-        let module_graph = module_graph.await?;
-        module_graph.traverse_edges_unordered(|parent, node| {
-            if let Some((parent_node, reference)) = parent {
-                all_modules.insert(parent_node);
-                all_modules.insert(node);
-                match reference.chunking_type {
-                    ChunkingType::Async => {
-                        all_async_edges.insert((parent_node, node));
-                    }
-                    _ => {
-                        all_edges.insert((parent_node, node));
-                    }
+    let mut all_traced_edges = FxIndexSet::default();
+    let mut traced_modules = FxHashSet::default();
+
+    let module_graph = module_graph.await?;
+    module_graph.traverse_edges_dfs(
+        module_graph.graphs.iter().flat_map(|g| g.entry_modules()),
+        &mut (),
+        |parent, node, _| {
+            all_modules.insert(node);
+            let Some((parent_node, reference)) = parent else {
+                return Ok(GraphTraversalAction::Continue);
+            };
+
+            // ChunkingType::Traced{is_entry: true}  => target is always traced
+            // ChunkingType::Traced{is_entry: false} => target only traced if parent is traced
+            // ChunkingType::*                       => target only traced if parent is traced
+            if matches!(
+                reference.chunking_type,
+                ChunkingType::Traced { is_entry: true }
+            ) || traced_modules.contains(&parent_node)
+            {
+                traced_modules.insert(node);
+                all_traced_edges.insert((parent_node, node));
+                return Ok(GraphTraversalAction::Continue);
+            };
+
+            match reference.chunking_type {
+                ChunkingType::Async => {
+                    all_async_edges.insert((parent_node, node));
+                }
+                _ => {
+                    all_edges.insert((parent_node, node));
                 }
             }
-            Ok(())
-        })?;
-    }
+            Ok(GraphTraversalAction::Continue)
+        },
+        |_, _, _| Ok(()),
+        true,
+    )?;
 
     type ModulePair = (ResolvedVc<Box<dyn Module>>, ResolvedVc<Box<dyn Module>>);
     async fn mapper((from, to): ModulePair) -> Result<Option<(RcStr, RcStr)>> {
@@ -477,8 +519,8 @@ pub async fn analyze_module_graphs(module_graphs: Vc<ModuleGraphs>) -> Result<Vc
         .try_join()
         .await?;
 
-    for (ident, path) in all_modules {
-        builder.ensure_module(&ident, &path);
+    for (ident, path) in &all_modules {
+        builder.ensure_module(ident, path);
     }
 
     let all_edges = all_edges
@@ -493,6 +535,16 @@ pub async fn analyze_module_graphs(module_graphs: Vc<ModuleGraphs>) -> Result<Vc
         .map(mapper)
         .try_flat_join()
         .await?;
+    let all_traced_edges = all_traced_edges
+        .iter()
+        .copied()
+        .map(mapper)
+        .try_flat_join()
+        .await?;
+    println!("all_modules: {all_modules:#?}");
+    println!("all_edges: {all_edges:#?}");
+    println!("all_async_edges: {all_async_edges:#?}");
+    println!("all_traced_edges: {all_traced_edges:#?}");
     for (from_ident, to_ident) in all_edges {
         let from_index = builder.get_module(&from_ident).1;
         let to_index = builder.get_module(&to_ident).1;
@@ -517,6 +569,19 @@ pub async fn analyze_module_graphs(module_graphs: Vc<ModuleGraphs>) -> Result<Vc
             .insert(to_index);
         builder.modules[to_index as usize]
             .async_dependents
+            .insert(from_index);
+    }
+    for (from_ident, to_ident) in all_traced_edges {
+        let from_index = builder.get_module(&from_ident).1;
+        let to_index = builder.get_module(&to_ident).1;
+        if from_index == to_index {
+            continue;
+        }
+        builder.modules[from_index as usize]
+            .traced_dependencies
+            .insert(to_index);
+        builder.modules[to_index as usize]
+            .traced_dependents
             .insert(from_index);
     }
 
@@ -568,18 +633,17 @@ impl OutputAsset for AnalyzeDataOutputAsset {
 #[turbo_tasks::value]
 pub struct ModulesDataOutputAsset {
     pub path: FileSystemPath,
-    pub module_graphs: ResolvedVc<ModuleGraphs>,
+    pub module_graph: ResolvedVc<ModuleGraph>,
 }
 
 #[turbo_tasks::value_impl]
 impl ModulesDataOutputAsset {
     #[turbo_tasks::function]
-    pub async fn new(path: FileSystemPath, module_graphs: Vc<ModuleGraphs>) -> Result<Vc<Self>> {
-        Ok(Self {
-            path,
-            module_graphs: module_graphs.to_resolved().await?,
-        }
-        .cell())
+    pub async fn new(
+        path: FileSystemPath,
+        module_graph: ResolvedVc<ModuleGraph>,
+    ) -> Result<Vc<Self>> {
+        Ok(Self { path, module_graph }.cell())
     }
 }
 
@@ -587,7 +651,7 @@ impl ModulesDataOutputAsset {
 impl Asset for ModulesDataOutputAsset {
     #[turbo_tasks::function]
     fn content(&self) -> Vc<AssetContent> {
-        let file_content = analyze_module_graphs(*self.module_graphs);
+        let file_content = analyze_module_graphs(*self.module_graph);
         AssetContent::file(file_content)
     }
 }
