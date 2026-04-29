@@ -161,6 +161,7 @@ pub async fn referenced_modules_and_affecting_sources(
 #[value_to_string("traced {}", self.module.ident())]
 pub struct TracedModuleReference {
     module: ResolvedVc<Box<dyn Module>>,
+    is_entry: bool,
 }
 
 #[turbo_tasks::value_impl]
@@ -171,15 +172,17 @@ impl ModuleReference for TracedModuleReference {
     }
 
     fn chunking_type(&self) -> Option<ChunkingType> {
-        Some(ChunkingType::Traced)
+        Some(ChunkingType::Traced {
+            is_entry: self.is_entry,
+        })
     }
 }
 
 #[turbo_tasks::value_impl]
 impl TracedModuleReference {
     #[turbo_tasks::function]
-    pub fn new(module: ResolvedVc<Box<dyn Module>>) -> Vc<Self> {
-        Self::cell(TracedModuleReference { module })
+    pub fn new(module: ResolvedVc<Box<dyn Module>>, is_entry: bool) -> Vc<Self> {
+        Self::cell(TracedModuleReference { module, is_entry })
     }
 }
 
@@ -240,7 +243,7 @@ pub async fn primary_chunkable_referenced_modules(
         .map(|reference| async {
             let trait_ref = reference.into_trait_ref().await?;
             if let Some(chunking_type) = &trait_ref.chunking_type() {
-                if !include_traced && matches!(chunking_type, ChunkingType::Traced) {
+                if !include_traced && chunking_type.is_traced() {
                     return Ok(None);
                 }
 

@@ -336,7 +336,7 @@ impl Module for CachedExternalModule {
                     })
                     .chain(external_result.primary_modules_raw_iter().map(|m| *m))
                     .map(|s| {
-                        Vc::upcast::<Box<dyn ModuleReference>>(TracedModuleReference::new(s))
+                        Vc::upcast::<Box<dyn ModuleReference>>(TracedModuleReference::new(s, true))
                             .to_resolved()
                     })
                     .try_join()

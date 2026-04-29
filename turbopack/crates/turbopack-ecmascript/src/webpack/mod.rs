@@ -135,7 +135,7 @@ impl ModuleReference for WebpackChunkAssetReference {
     }
 
     fn chunking_type(&self) -> Option<ChunkingType> {
-        Some(ChunkingType::Traced)
+        Some(ChunkingType::Traced { is_entry: false })
     }
 }
 
@@ -166,7 +166,7 @@ impl ModuleReference for WebpackEntryAssetReference {
     }
 
     fn chunking_type(&self) -> Option<ChunkingType> {
-        Some(ChunkingType::Traced)
+        Some(ChunkingType::Traced { is_entry: false })
     }
 }
 
@@ -215,6 +215,6 @@ impl ModuleReference for WebpackRuntimeAssetReference {
     }
 
     fn chunking_type(&self) -> Option<ChunkingType> {
-        Some(ChunkingType::Traced)
+        Some(ChunkingType::Traced { is_entry: false })
     }
 }

@@ -74,7 +74,7 @@ impl ModuleReference for NodePreGypConfigReference {
     }
 
     fn chunking_type(&self) -> Option<ChunkingType> {
-        Some(ChunkingType::Traced)
+        Some(ChunkingType::Traced { is_entry: false })
     }
 }
 
@@ -260,7 +260,7 @@ impl ModuleReference for NodeGypBuildReference {
     }
 
     fn chunking_type(&self) -> Option<ChunkingType> {
-        Some(ChunkingType::Traced)
+        Some(ChunkingType::Traced { is_entry: false })
     }
 }
 
@@ -385,7 +385,7 @@ impl ModuleReference for NodeBindingsReference {
     }
 
     fn chunking_type(&self) -> Option<ChunkingType> {
-        Some(ChunkingType::Traced)
+        Some(ChunkingType::Traced { is_entry: false })
     }
 }
 

@@ -454,7 +454,14 @@ pub async fn traced_modules_for_entries(
                 return Ok(GraphTraversalAction::Continue);
             };
 
-            if ref_data.chunking_type == ChunkingType::Traced || traced_modules.contains(&parent) {
+            // ChunkingType::Traced{is_entry: true}  => target is always traced
+            // ChunkingType::Traced{is_entry: false} => target only traced if parent is traced
+            // ChunkingType::*                       => target only traced if parent is traced
+            if matches!(
+                ref_data.chunking_type,
+                ChunkingType::Traced { is_entry: true }
+            ) || traced_modules.contains(&parent)
+            {
                 if let Some(exclude_glob) = &exclude_glob
                     && exclude_glob.matches(
                         &module_paths
@@ -503,7 +510,14 @@ async fn module_paths_for_graph(
                 return Ok(GraphTraversalAction::Continue);
             };
 
-            if ref_data.chunking_type == ChunkingType::Traced || traced_modules.contains(&parent) {
+            // ChunkingType::Traced{is_entry: true}  => target is always traced
+            // ChunkingType::Traced{is_entry: false} => target only traced if parent is traced
+            // ChunkingType::*                       => target only traced if parent is traced
+            if matches!(
+                ref_data.chunking_type,
+                ChunkingType::Traced { is_entry: true }
+            ) || traced_modules.contains(&parent)
+            {
                 traced_modules.insert(target);
             };
             Ok(GraphTraversalAction::Continue)

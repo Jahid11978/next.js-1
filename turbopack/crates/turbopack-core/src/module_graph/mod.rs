@@ -1780,6 +1780,13 @@ impl Visit<SingleModuleGraphBuilderNode, RefData> for SingleModuleGraphBuilder<'
                         )
                     })
                 })
+                .filter(|(_, ty, _, _)| {
+                    // Ignore non-entry traced reference if not already in tracing mode.
+                    // ChunkingType::Traced{is_entry: true} =>target is always traced
+                    // ChunkingType::Traced{is_entry: false}=>target only traced if parent is traced
+                    // ChunkingType::*                      =>target only traced if parent is traced
+                    !matches!(ty, ChunkingType::Traced { is_entry: false }) || is_traced
+                })
                 .map(async |(reference, ty, binding_usage, target)| {
                     let to = if let Some(idx) = visited_modules.get(&target) {
                         SingleModuleGraphBuilderNode::new_visited_module(target, *idx)
@@ -1787,7 +1794,7 @@ impl Visit<SingleModuleGraphBuilderNode, RefData> for SingleModuleGraphBuilder<'
                         SingleModuleGraphBuilderNode::new_module(
                             emit_spans,
                             target,
-                            is_traced || ty == ChunkingType::Traced,
+                            is_traced || ty.is_traced(),
                         )
                         .await?
                     };
@@ -1832,7 +1839,7 @@ impl Visit<SingleModuleGraphBuilderNode, RefData> for SingleModuleGraphBuilder<'
                     inherit_async: _,
                     hoisted: _,
                 } => {}
-                ChunkingType::Traced => {
+                ChunkingType::Traced { .. } => {
                     let _span = span.entered();
                     span = tracing::info_span!("traced reference");
                 }
@@ -2354,7 +2361,7 @@ pub mod tests {
                         ("x.js", vec!["y.js", "traced.js"]),
                         ("y.js", vec!["z.js"]),
                     ],
-                    [("x.js", "traced.js", ChunkingType::Traced)],
+                    [("x.js", "traced.js", ChunkingType::Traced { is_entry: true })],
                 );
                 let make_module = |name| {
                     Vc::upcast::<Box<dyn Module>>(MockModule::new(root.join(name).unwrap(), repo))

@@ -212,7 +212,7 @@ pub async fn chunk_group_content(
             if let Some((
                 _,
                 ModuleBatchesGraphEdge {
-                    ty: ChunkingType::Traced,
+                    ty: ChunkingType::Traced { .. },
                     ..
                 },
             )) = parent_info
@@ -282,7 +282,7 @@ pub async fn chunk_group_content(
                         GraphTraversalAction::Exclude
                     }
                 }
-                ChunkingType::Traced => {
+                ChunkingType::Traced { .. } => {
                     // handled above before the sidecast
                     unreachable!();
                 }

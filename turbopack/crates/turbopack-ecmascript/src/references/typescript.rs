@@ -45,7 +45,7 @@ impl ModuleReference for TsConfigReference {
     }
 
     fn chunking_type(&self) -> Option<ChunkingType> {
-        Some(ChunkingType::Traced)
+        Some(ChunkingType::Traced { is_entry: false })
     }
 }
 
@@ -95,7 +95,7 @@ impl ModuleReference for TsReferencePathAssetReference {
     }
 
     fn chunking_type(&self) -> Option<ChunkingType> {
-        Some(ChunkingType::Traced)
+        Some(ChunkingType::Traced { is_entry: false })
     }
 }
 
@@ -131,6 +131,6 @@ impl ModuleReference for TsReferenceTypeAssetReference {
     }
 
     fn chunking_type(&self) -> Option<ChunkingType> {
-        Some(ChunkingType::Traced)
+        Some(ChunkingType::Traced { is_entry: false })
     }
 }

@@ -54,7 +54,7 @@ impl ModuleReference for SourceMapReference {
     }
 
     fn chunking_type(&self) -> Option<ChunkingType> {
-        Some(ChunkingType::Traced)
+        Some(ChunkingType::Traced { is_entry: false })
     }
 }
 
