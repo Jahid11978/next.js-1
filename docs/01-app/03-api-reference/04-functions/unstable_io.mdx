@@ -4,67 +4,200 @@ description: API Reference for the unstable_io function.
 version: draft
 ---
 
-`unstable_io()` informs Next.js that an IO operation will follow this call. When [Cache Components](/docs/app/api-reference/config/next-config-js/cacheComponents) is not enabled or when rendering in Pages Router, signifying IO in this way is not meaningful and the call will always resolve immediately. When Cache Components is enabled, you may be required to add `await unstable_io()` preceding synchronous IO that is encountered while prerendering pages (`new Date()` for example). Additionally, if you want to avoid having genuine uncached IO invoked while prerendering, you shield it by preceeding it with `await unstable_io()`.
+With [Cache Components](/docs/app/api-reference/config/next-config-js/cacheComponents) enabled, the prerender fails when it encounters reads like `new Date()` or `Math.random()` outside a cached scope or a subtree that already defers to request time (via `cookies()`, an awaited `fetch()`, an async database query, and so on). Calling `await unstable_io()` (or `use(unstable_io())` in a Client Component) before the read stops prerendering, so the read runs at request time instead.
 
-```ts filename="app/page.tsx" switcher
+A surrounding [`<Suspense>` boundary](/docs/app/glossary#suspense-boundary) provides the fallback that ships in the [static shell](/docs/app/glossary#static-shell) while the deferred code runs.
+
+Outside Cache Components (including the Pages Router), `unstable_io()` is a no-op.
+
+> **Good to know:** This API is experimental and may change.
+
+```tsx filename="app/page.tsx" highlight={4} switcher
 import { unstable_io } from 'next/cache'
-import { db } from '@/lib/db'
 
 export default async function Page() {
-  // Synchronous IO: new Date() would fail during prerender without this
   await unstable_io()
   const now = new Date().toISOString()
+  return <p>Generated at: {now}</p>
+}
+```
 
-  // Async IO: the query would run and be discarded during prerender;
-  // unstable_io() above lets Next.js skip it entirely
-  const orders = await db.query('SELECT * FROM orders LIMIT 10')
+```jsx filename="app/page.js" highlight={4} switcher
+import { unstable_io } from 'next/cache'
 
+export default async function Page() {
+  await unstable_io()
+  const now = new Date().toISOString()
+  return <p>Generated at: {now}</p>
+}
+```
+
+## When to use `unstable_io()`
+
+Reach for `unstable_io()` in two scenarios:
+
+- **A Server Component reads a value that should vary per request**, such as `new Date()`, `Math.random()`, `crypto.randomUUID()`, or a query against a synchronous database driver like [`node:sqlite`](https://nodejs.org/api/sqlite.html) or `better-sqlite3`.
+- **A Client Component reads a sync source like `Date.now()`.** Without `unstable_io()`, the sync read during the server prerender of a Client Component deopts the surrounding prerender shell. Calling `use(unstable_io())` before the read lets the prerender suspend cleanly so the rest of the shell still ships.
+
+You do **not** need `unstable_io()` when:
+
+- The component already uses a [Request-time API](/docs/app/glossary#request-time-apis) like `cookies()` or `headers()`. The request-time API is the suspension point.
+- The data comes from an awaited `fetch` or async database query wrapped in `<Suspense>`. That `await` is the suspension point.
+
+## Examples
+
+### Server Component with a sync source
+
+`CurrentTime` reads `new Date()`, which is synchronous. Without `await unstable_io()`, the prerender fails because the read sits outside any cached scope or deferred subtree. With the call in place, prerendering stops at that line. The fallback in the surrounding `<Suspense>` ships as part of the [static shell](/docs/app/glossary#static-shell), and `CurrentTime` runs at request time so each visitor sees the time of their request.
+
+```tsx filename="app/page.tsx" highlight={16} switcher
+import { Suspense } from 'react'
+import { unstable_io } from 'next/cache'
+
+export default function Page() {
   return (
     <main>
-      <p>Generated at: {now}</p>
-      <ul>
-        {orders.map((order) => (
-          <li key={order.id}>{order.name}</li>
-        ))}
-      </ul>
+      <h1>Today's report</h1>
+      <Suspense fallback={<p>Loading...</p>}>
+        <CurrentTime />
+      </Suspense>
+    </main>
+  )
+}
+
+async function CurrentTime() {
+  await unstable_io()
+  return <p>Generated at: {new Date().toISOString()}</p>
+}
+```
+
+```jsx filename="app/page.js" highlight={16} switcher
+import { Suspense } from 'react'
+import { unstable_io } from 'next/cache'
+
+export default function Page() {
+  return (
+    <main>
+      <h1>Today's report</h1>
+      <Suspense fallback={<p>Loading...</p>}>
+        <CurrentTime />
+      </Suspense>
+    </main>
+  )
+}
+
+async function CurrentTime() {
+  await unstable_io()
+  return <p>Generated at: {new Date().toISOString()}</p>
+}
+```
+
+### Client Component with a sync source
+
+In a Client Component, unwrap `unstable_io()` through React's [`use`](https://react.dev/reference/react/use) hook. Without the call, the synchronous `Date.now()` in `CurrentTime` would deopt the prerender of the surrounding shell. `StaticIsland` would also fall back to its `Suspense` placeholder, even though it has no I/O of its own. With `use(unstable_io())` in `CurrentTime`, only that island suspends; `StaticIsland` still prerenders into the shell.
+
+```tsx filename="app/components.tsx" highlight={6} switcher
+'use client'
+import { use } from 'react'
+import { unstable_io } from 'next/cache'
+
+export function CurrentTime() {
+  use(unstable_io())
+  return <div>Now: {Date.now()}</div>
+}
+
+export function StaticIsland() {
+  return <div>Static content</div>
+}
+```
+
+```jsx filename="app/components.js" highlight={6} switcher
+'use client'
+import { use } from 'react'
+import { unstable_io } from 'next/cache'
+
+export function CurrentTime() {
+  use(unstable_io())
+  return <div>Now: {Date.now()}</div>
+}
+
+export function StaticIsland() {
+  return <div>Static content</div>
+}
+```
+
+```tsx filename="app/page.tsx" switcher
+import { Suspense } from 'react'
+import { CurrentTime, StaticIsland } from './components'
+
+export default function Page() {
+  return (
+    <main>
+      <Suspense fallback={<p>Loading...</p>}>
+        <CurrentTime />
+      </Suspense>
+      <Suspense fallback={<p>Loading...</p>}>
+        <StaticIsland />
+      </Suspense>
     </main>
   )
 }
 ```
 
-```js filename="app/page.js" switcher
+### Sharing an I/O helper between cached and uncached call sites
+
+A helper that uses `unstable_io()` is safe to call from both a [`"use cache"`](/docs/app/api-reference/directives/use-cache) function and a regular Server Component without changes. Inside the cache, `unstable_io()` resolves immediately and `readNow` runs when the cache is filled, so `GeneratedAt` shows the captured timestamp on every reuse. Outside the cache, the same `readNow` stops prerendering and runs at request time, so `ServedAt` reflects each request.
+
+```tsx filename="app/lib/clock.ts" switcher
 import { unstable_io } from 'next/cache'
-import { db } from '@/lib/db'
 
-export default async function Page() {
-  // Synchronous IO: new Date() would fail during prerender without this
+export async function readNow() {
   await unstable_io()
-  const now = new Date().toISOString()
+  return new Date().toISOString()
+}
+```
 
-  // Async IO: the query would run and be discarded during prerender;
-  // unstable_io() above lets Next.js skip it entirely
-  const orders = await db.query('SELECT * FROM orders LIMIT 10')
+```jsx filename="app/lib/clock.js" switcher
+import { unstable_io } from 'next/cache'
 
+export async function readNow() {
+  await unstable_io()
+  return new Date().toISOString()
+}
+```
+
+```tsx filename="app/page.tsx" switcher
+import { Suspense } from 'react'
+import { readNow } from '@/lib/clock'
+
+async function getGeneratedAt() {
+  'use cache'
+  return readNow()
+}
+
+async function GeneratedAt() {
+  return <p>Generated at: {await getGeneratedAt()}</p>
+}
+
+async function ServedAt() {
+  return <p>Served at: {await readNow()}</p>
+}
+
+export default function Page() {
   return (
     <main>
-      <p>Generated at: {now}</p>
-      <ul>
-        {orders.map((order) => (
-          <li key={order.id}>{order.name}</li>
-        ))}
-      </ul>
+      <Suspense fallback={<p>...</p>}>
+        <GeneratedAt />
+      </Suspense>
+      <Suspense fallback={<p>...</p>}>
+        <ServedAt />
+      </Suspense>
     </main>
   )
 }
 ```
 
-## How is this different from `connection()`?
-
-[`connection()`](/docs/app/api-reference/functions/connection) requires an active HTTP request context and signals that the component needs request-specific data. It is imported from `next/server`.
-
-`unstable_io()` does not require a request context. It can be used inside `"use cache"` scopes, client components, and anywhere you perform IO that should not be included in a static prerender. It is imported from `next/cache`.
-
-Use `connection()` when you need the request itself (cookies, headers, etc.). Use `unstable_io()` when you perform IO that is independent of the request but should still prevent static prerendering.
+The same `readNow` would not work if it called [`connection()`](/docs/app/api-reference/functions/connection): there is no request context while the cache is being filled, so `connection()` cannot be used inside `"use cache"`. `unstable_io()` resolves immediately inside `"use cache"` and stops prerendering outside it, so the same helper works in both.
 
 ## Reference
 
@@ -80,13 +213,39 @@ function unstable_io(): Promise<void>
 
 ### Returns
 
-- A `Promise<void>` that resolves immediately during a real request or inside a cache scope, and suspends indefinitely during prerendering to prevent static output from including IO-dependent content.
+- A `Promise<void>`. With [Cache Components](/docs/app/api-reference/config/next-config-js/cacheComponents) enabled, awaiting this promise stops prerendering so the code that follows is excluded from the prerender output. In every other context (real requests, cache scopes, [`generateStaticParams`](/docs/app/api-reference/functions/generate-static-params), browser, and routes without Cache Components), it resolves immediately.
+
+### Behavior by rendering context
+
+| Context                                                                                                  | Behavior                     |
+| -------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| Server Component during a real request                                                                   | Resolves immediately         |
+| Prerender with [Cache Components](/docs/app/api-reference/config/next-config-js/cacheComponents) enabled | Stops prerendering           |
+| Inside any [`"use cache"`](/docs/app/api-reference/directives/use-cache) directive (default, remote, private) or [`unstable_cache`](/docs/app/api-reference/functions/unstable_cache) | Resolves immediately |
+| [`generateStaticParams`](/docs/app/api-reference/functions/generate-static-params)                       | Resolves immediately         |
+| Client Component running in the browser                                                                  | Resolves immediately         |
+| Cache Components not enabled (App Router or Pages Router)                                                | Resolves immediately (no-op) |
+
+> **Note:** Prerender covers Client Components too. They render on the server during SSR and prerender, not only in the browser. There, `use(unstable_io())` stops prerendering exactly like `await unstable_io()` does in a Server Component; once the same component runs in the browser, the call resolves immediately.
 
 ## Good to know
 
 - `unstable_io()` is imported from `next/cache`, not `next/server`.
-- Inside `"use cache"` scopes, `unstable_io()` resolves immediately. The cache captures the IO result at fill time.
-- In client components, `unstable_io()` resolves immediately since there is no prerender context in the browser.
+- Call as `await unstable_io()` in Server Components. Call as `use(unstable_io())` in Client Components.
+- Pair `unstable_io()` with a [`<Suspense>` boundary](/docs/app/glossary#suspense-boundary) so the surrounding shell still prerenders.
+- Prerendering happens at build, during on-demand revalidation, and during runtime prefetch generation. `unstable_io()` suspends in all three.
+- Use [`connection()`](/docs/app/api-reference/functions/connection) when the component needs the request itself (cookies, headers, etc.). Use `unstable_io()` to stop prerendering at a specific call site, including inside `"use cache"` and Client Components.
+
+## Related
+
+- [Working with non-deterministic operations](/docs/app/getting-started/caching#working-with-non-deterministic-operations)
+- [`"use cache"` directive](/docs/app/api-reference/directives/use-cache)
+- [`cacheComponents` config option](/docs/app/api-reference/config/next-config-js/cacheComponents)
+- [`connection()`](/docs/app/api-reference/functions/connection)
+- [Prerendering (glossary)](/docs/app/glossary#prerendering)
+- [Static shell (glossary)](/docs/app/glossary#static-shell)
+- [Suspense boundary (glossary)](/docs/app/glossary#suspense-boundary)
+- [Request-time APIs (glossary)](/docs/app/glossary#request-time-apis)
 
 ### Version History
 
