@@ -111,7 +111,7 @@
     "sharp034": "npm:sharp@^0.34.0",
     "sharp": "npm:sharp@^0.35.0",
     "shiki": "^0.14.5",
-    "socket.io": "^2.4.0",
+    "socket.io": "^4.8.4",
     "socket.io-client": "^2.2.0",
     "sqlite3": "^5.0.8",
     "stripe": "^18.0.0",
